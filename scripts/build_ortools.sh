@@ -12,17 +12,18 @@ BIND_DIR="$ROOT/third_party/ortools_bind"
 LIB="$OR_DIR/lib"
 
 # Pick a version. Update OR_VERSION if you need a newer OR-Tools.
-OR_VERSION="9.11"
-# Prebuilt C++ bundle (Linux x86_64). For other platforms adjust the URL below.
+OR_VERSION="9.11.4210"
+# Prebuilt C++ bundle (Linux x86_64, ubuntu-22.04). For other platforms adjust the URL below.
 OR_URL="https://github.com/google/or-tools/releases/download/v${OR_VERSION}/or-tools_amd64_ubuntu-22.04_cpp_v${OR_VERSION}.tar.gz"
 
-mkdir -p "$ROOT/third_party"
+mkdir -p "$ROOT/third_party" "$OR_DIR"
 if [ ! -d "$OR_DIR/include" ]; then
   echo ">> Downloading OR-Tools ${OR_VERSION} C++ ..."
   tmp="$(mktemp -d)"
   curl -fL "$OR_URL" -o "$tmp/ortools.tar.gz"
   tar -xzf "$tmp/ortools.tar.gz" -C "$tmp"
-  mv "$tmp"/or-tools_* "$OR_DIR"
+  src="$(ls -d "$tmp"/or-tools_*)"
+  cp -r "$src"/. "$OR_DIR"/
   rm -rf "$tmp"
 fi
 
