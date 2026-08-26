@@ -34,7 +34,7 @@ fi
 
 echo ">> Compiling C++ binding (bind.cpp) with clang-cl ..."
 export PATH="/c/Program Files/LLVM/bin:$PATH"
-clang-cl -std=c++17 \
+clang-cl /std:c++17 /EHsc \
   -I"$WIN_DIR/include" -I"$BIND_DIR" \
   -c "$BIND_DIR/bind.cpp" -o "$BIND_DIR/bind_win.obj"
 
