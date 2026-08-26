@@ -40,8 +40,10 @@ jobs:
           wails build -platform windows/amd64 -tags ortools
           cp third_party/ortools_win/ortools_csat.dll build/bin/
           [ -f third_party/ortools_win/bin/ortools.dll ] && cp third_party/ortools_win/bin/ortools.dll build/bin/ || echo "no separate ortools.dll (statically linked)"
-          CRT=$(find "/c/Program Files/Microsoft Visual Studio/2022" -type d -name "Microsoft.VC143.CRT" 2>/dev/null | head -1)
-          if [ -n "$CRT" ]; then cp "$CRT"/*.dll build/bin/ 2>/dev/null; echo "copied MSVC CRT from $CRT"; fi
+          CRT=$(find "/c/Program Files/Microsoft Visual Studio" -type d -name "Microsoft.VC143.CRT" 2>/dev/null | head -1)
+          if [ -n "$CRT" ]; then
+            find "$CRT" -maxdepth 1 -name '*.dll' -exec cp {} build/bin/ ';' && echo "copied MSVC CRT from $CRT" || echo "CRT copy skipped"
+          fi
       - name: Stage installer files
         shell: bash
         run: |
