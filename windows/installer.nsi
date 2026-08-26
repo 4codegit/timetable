@@ -1,11 +1,7 @@
 !include "MUI2.nsh"
 
-!ifndef REPOROOT
-  !define REPOROOT "."
-!endif
-
 Name "Timetable"
-OutFile "${REPOROOT}/build/timetable-setup-x64.exe"
+OutFile "../build/timetable-setup-x64.exe"
 InstallDir "$PROGRAMFILES64\Timetable"
 RequestExecutionLevel admin
 SetCompressor /SOLID lzma
@@ -16,27 +12,27 @@ SetCompressor /SOLID lzma
 
 Section "Install"
   SetOutPath "$INSTDIR"
-  File "${REPOROOT}/windows/staging/timetable.exe"
-  File "${REPOROOT}/windows/staging/ortools_csat.dll"
-  !ifexist "${REPOROOT}/windows/staging/ortools.dll"
-    File "${REPOROOT}/windows/staging/ortools.dll"
+  File "staging/timetable.exe"
+  File "staging/ortools_csat.dll"
+  !ifexist "staging/ortools.dll"
+    File "staging/ortools.dll"
   !endif
-  !ifexist "${REPOROOT}/windows/staging/vcruntime140.dll"
-    File "${REPOROOT}/windows/staging/vcruntime140.dll"
+  !ifexist "staging/vcruntime140.dll"
+    File "staging/vcruntime140.dll"
   !endif
-  !ifexist "${REPOROOT}/windows/staging/vcruntime140_1.dll"
-    File "${REPOROOT}/windows/staging/vcruntime140_1.dll"
+  !ifexist "staging/vcruntime140_1.dll"
+    File "staging/vcruntime140_1.dll"
   !endif
-  !ifexist "${REPOROOT}/windows/staging/msvcp140.dll"
-    File "${REPOROOT}/windows/staging/msvcp140.dll"
+  !ifexist "staging/msvcp140.dll"
+    File "staging/msvcp140.dll"
   !endif
-  !ifexist "${REPOROOT}/windows/staging/msvcp140_1.dll"
-    File "${REPOROOT}/windows/staging/msvcp140_1.dll"
+  !ifexist "staging/msvcp140_1.dll"
+    File "staging/msvcp140_1.dll"
   !endif
-  !ifexist "${REPOROOT}/windows/staging/msvcp140_codecvt_ids.dll"
-    File "${REPOROOT}/windows/staging/msvcp140_codecvt_ids.dll"
+  !ifexist "staging/msvcp140_codecvt_ids.dll"
+    File "staging/msvcp140_codecvt_ids.dll"
   !endif
-  File "${REPOROOT}/windows/staging/MicrosoftEdgeWebView2RuntimeInstallerX64.exe"
+  File "staging/MicrosoftEdgeWebView2RuntimeInstallerX64.exe"
 
   DetailPrint "Установка WebView2 Runtime (офлайн)..."
   ExecWait '"$INSTDIR\MicrosoftEdgeWebView2RuntimeInstallerX64.exe" /silent /install'
