@@ -1,5 +1,7 @@
 !include "MUI2.nsh"
 
+!cd "${__FILEDIR__}/.."
+
 Name "Timetable"
 OutFile "build/timetable-setup-x64.exe"
 InstallDir "$PROGRAMFILES64\Timetable"
