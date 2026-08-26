@@ -102,6 +102,8 @@ jobs:
       - name: Build OR-Tools C++ binding
         run: bash scripts/build_ortools.sh
       - name: Build Linux amd64 with -tags ortools
+        env:
+          LD_LIBRARY_PATH: ${{ github.workspace }}/third_party/ortools/lib
         run: |
           export PATH=$PATH:$(go env GOPATH)/bin
           wails build -platform linux/amd64 -tags ortools
