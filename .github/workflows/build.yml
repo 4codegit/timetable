@@ -32,12 +32,11 @@ jobs:
       - name: Build Windows amd64 with -tags ortools
         shell: bash
         env:
-          CC: cl
-          CXX: cl
           CGO_ENABLED: "1"
           MSYS_NO_PATHCONV: "1"
         run: |
           export PATH=$PATH:$(go env GOPATH)/bin
+          go env -w CC=cl CXX=cl CGO_ENABLED=1
           wails build -platform windows/amd64 -tags ortools
           cp third_party/ortools_win/bin/ortools.dll build/bin/
       - name: Stage installer files
