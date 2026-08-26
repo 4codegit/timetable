@@ -7,3 +7,6 @@ windows/staging/
 frontend/dist/
 dist/
 .DS_Store
+third_party/ortools/
+third_party/ortools/
+third_party/ortools_bind/bind.o

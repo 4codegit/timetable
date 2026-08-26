@@ -4,16 +4,16 @@ package solver
 
 /*
 #cgo CFLAGS: -I${SRCDIR}/../../third_party/ortools/include -I${SRCDIR}/../../third_party/ortools_bind
-#cgo LDFLAGS: -L${SRCDIR}/../../third_party/ortools/lib -lortools -lstdc++ -lpthread -ldl -Wl,-rpath,$ORIGIN
+#cgo LDFLAGS: -L${SRCDIR}/../../third_party/ortools/lib -lortools -lstdc++ -lpthread -ldl -Wl,-rpath,$ORIGIN ${SRCDIR}/../../third_party/ortools_bind/bind.o
 #include <stdlib.h>
 #include "bind.h"
 */
 import "C"
 
 import (
-	"context"
 	"runtime"
 	"time"
+	"unsafe"
 
 	"timetable/internal/domain"
 )
@@ -163,21 +163,30 @@ func ortoolsSolve(in SolveInput, parallelism int, timeout time.Duration) (Result
 	if res == nil {
 		return Result{}, false
 	}
-	defer C.free_schedule_result(res)
+  defer C.free_schedule_result(res)
 
-	entries := make([]domain.ScheduleEntry, 0, int(res.count))
-	for i := 0; i < int(res.count); i++ {
-		entries = append(entries, domain.ScheduleEntry{
-			SchoolID:  in.SchoolID,
-			LessonID:  int(res.lesson_ids[i]),
-			ClassID:   int(res.class_ids[i]),
-			TeacherID: int(res.teacher_ids[i]),
-			SubjectID: int(res.subject_ids[i]),
-			RoomID:    int(res.room_ids[i]),
-			DayOfWeek: int(res.days[i]),
-			Timeslot:  int(res.slots[i]),
-			WeekType:  0,
-		})
-	}
-	return Result{Entries: entries, Placed: int(res.count), Total: int(res.count), Violations: 0}, true
+  n := int(res.count)
+  lessonIDs := (*[1 << 30]C.int)(unsafe.Pointer(res.lesson_ids))[:n:n]
+  classIDs := (*[1 << 30]C.int)(unsafe.Pointer(res.class_ids))[:n:n]
+  teacherIDs := (*[1 << 30]C.int)(unsafe.Pointer(res.teacher_ids))[:n:n]
+  subjectIDs := (*[1 << 30]C.int)(unsafe.Pointer(res.subject_ids))[:n:n]
+  outRoomIDs := (*[1 << 30]C.int)(unsafe.Pointer(res.room_ids))[:n:n]
+  dayArr := (*[1 << 30]C.int)(unsafe.Pointer(res.days))[:n:n]
+  slotArr := (*[1 << 30]C.int)(unsafe.Pointer(res.slots))[:n:n]
+
+  entries := make([]domain.ScheduleEntry, 0, n)
+  for i := 0; i < n; i++ {
+    entries = append(entries, domain.ScheduleEntry{
+      SchoolID:  in.SchoolID,
+      LessonID:  int(lessonIDs[i]),
+      ClassID:   int(classIDs[i]),
+      TeacherID: int(teacherIDs[i]),
+      SubjectID: int(subjectIDs[i]),
+      RoomID:    int(outRoomIDs[i]),
+      DayOfWeek: int(dayArr[i]),
+      Timeslot:  int(slotArr[i]),
+      WeekType:  0,
+    })
+  }
+  return Result{Entries: entries, Placed: n, Total: n, Violations: 0}, true
 }

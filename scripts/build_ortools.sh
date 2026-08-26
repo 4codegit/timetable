@@ -33,4 +33,12 @@ if [ ! -d "$OR_DIR/include" ]; then
 fi
 
 echo ">> OR-Tools ready at $OR_DIR (link with -lortools; bundle libortools.so at runtime)."
+
+echo ">> Compiling C++ binding (bind.cpp) ..."
+CXX=${CXX:-g++}
+"$CXX" -std=c++17 -O2 \
+  -I"$OR_DIR/include" -I"$BIND_DIR" \
+  -c "$BIND_DIR/bind.cpp" -o "$BIND_DIR/bind.o"
+
+echo ">> Done. libortools.so + bind.o built."
 echo "   Build with:  go build -tags ortools ./..."
