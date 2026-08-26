@@ -56,26 +56,37 @@ jobs:
       - name: Install WebView + packaging deps
         run: |
           sudo apt-get update
-          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.0-dev librsvg2-dev pkg-config ruby ruby-dev
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.0-dev librsvg2-dev pkg-config build-essential ruby ruby-dev
           sudo gem install fpm
       - name: Install Wails CLI
         run: go install github.com/wailsapp/wails/v2/cmd/wails@latest
-      - name: Build Linux amd64
+      - name: Build OR-Tools C++ binding
+        run: bash scripts/build_ortools.sh
+      - name: Build Linux amd64 with -tags ortools
+        env:
+          LD_LIBRARY_PATH: ${{ github.workspace }}/third_party/ortools/lib
         run: |
           export PATH=$PATH:$(go env GOPATH)/bin
-          wails build -platform linux/amd64
+          wails build -platform linux/amd64 -tags ortools
+          cp -L third_party/ortools/lib/libortools.so* build/bin/
       - name: Package .deb + .rpm
         run: |
           export PATH=$PATH:$(go env GOPATH)/bin
           mkdir -p build/linux
           fpm -s dir -t deb -n timetable -v 1.0.0 --architecture amd64 -p build/linux/timetable_1.0.0_amd64.deb \
             --depends libwebkit2gtk-4.0-37 --depends libgtk-3-0 --depends librsvg2-2 --depends libglib2.0-0 \
-            build/bin/timetable=/opt/timetable/timetable
+            build/bin/timetable=/opt/timetable/timetable \
+            build/bin/libortools.so=/opt/timetable/libortools.so \
+            build/bin/libortools.so.9=/opt/timetable/libortools.so.9 \
+            build/bin/libortools.so.9.11.4210=/opt/timetable/libortools.so.9.11.4210
           fpm -s dir -t rpm -n timetable -v 1.0.0 --architecture amd64 -p build/linux/timetable_1.0.0_amd64.rpm \
             --depends webkit2gtk3 --depends gtk3 --depends librsvg2 \
-            build/bin/timetable=/opt/timetable/timetable
+            build/bin/timetable=/opt/timetable/timetable \
+            build/bin/libortools.so=/opt/timetable/libortools.so \
+            build/bin/libortools.so.9=/opt/timetable/libortools.so.9 \
+            build/bin/libortools.so.9.11.4210=/opt/timetable/libortools.so.9.11.4210
       - name: Tarball
-        run: tar -czf build/linux/timetable-linux.tar.gz -C build/bin timetable
+        run: tar -czf build/linux/timetable-linux.tar.gz -C build/bin timetable libortools.so*
       - uses: actions/upload-artifact@v4
         with:
           name: timetable-linux
