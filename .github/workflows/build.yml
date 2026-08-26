@@ -69,8 +69,10 @@ jobs:
           export PATH=$PATH:$(go env GOPATH)/bin
           mkdir -p build/linux
           fpm -s dir -t deb -n timetable -v 1.0.0 --architecture amd64 -p build/linux/timetable_1.0.0_amd64.deb \
+            --depends libwebkit2gtk-4.0-37 --depends libgtk-3-0 --depends librsvg2-2 --depends libglib2.0-0 \
             build/bin/timetable=/opt/timetable/timetable
           fpm -s dir -t rpm -n timetable -v 1.0.0 --architecture amd64 -p build/linux/timetable_1.0.0_amd64.rpm \
+            --depends webkit2gtk3 --depends gtk3 --depends librsvg2 \
             build/bin/timetable=/opt/timetable/timetable
       - name: Tarball
         run: tar -czf build/linux/timetable-linux.tar.gz -C build/bin timetable
