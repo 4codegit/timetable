@@ -1,9 +1,11 @@
 !include "MUI2.nsh"
 
-!cd "${__FILEDIR__}/.."
+!ifndef REPOROOT
+  !define REPOROOT "."
+!endif
 
 Name "Timetable"
-OutFile "build/timetable-setup-x64.exe"
+OutFile "${REPOROOT}/build/timetable-setup-x64.exe"
 InstallDir "$PROGRAMFILES64\Timetable"
 RequestExecutionLevel admin
 SetCompressor /SOLID lzma
@@ -14,8 +16,8 @@ SetCompressor /SOLID lzma
 
 Section "Install"
   SetOutPath "$INSTDIR"
-  File "staging/timetable.exe"
-  File "staging/MicrosoftEdgeWebView2RuntimeInstallerX64.exe"
+  File "${REPOROOT}/windows/staging/timetable.exe"
+  File "${REPOROOT}/windows/staging/MicrosoftEdgeWebView2RuntimeInstallerX64.exe"
 
   DetailPrint "Установка WebView2 Runtime (офлайн)..."
   ExecWait '"$INSTDIR\MicrosoftEdgeWebView2RuntimeInstallerX64.exe" /silent /install'
