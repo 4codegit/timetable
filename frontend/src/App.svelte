@@ -42,6 +42,10 @@
 	let pageSize = "A2";          // A0 | A1 | A2 | A3 | A4
 	let orientation = "landscape";// portrait | landscape
 	let compact = false;
+	let pdfShowTeacher = true;
+	let pdfShowRoom = true;
+	let pdfWeekdaysOnly = false;
+	let pdfBW = false;
 	let classPage = 0;
 	const classesPerPage = 10;
 	$: visibleRows = viewMode === "class"
@@ -197,6 +201,9 @@
 		if (!e) return null;
 		return {
 			id: e.id,
+			subject_id: e.subject_id,
+			teacher_id: e.teacher_id,
+			room_id: e.room_id,
 			conflict: conflictIDs.has(e.id),
 			label: subjName(subjects, e.subject_id) + " (" + teachName(teachers, e.teacher_id) + ") " + (rooms.find(r => r.id === e.room_id)?.name || "")
 		};
@@ -241,38 +248,95 @@
 		return classes.map((c) => ({ id: c.id, label: c.name }));
 	}
 	function exportBlock(row, kind, pageBreak) {
+		const daysN = pdfWeekdaysOnly ? Math.min(days, 5) : days;
 		let h = pageBreak ? '<div class="page">' : "<div>";
-		h += "<h2>" + escapeHtml(row.label) + "</h2><table><thead><tr><th>День</th>";
+		h += '<div class="doc-header"><h2>' + escapeHtml(row.label) + "</h2>";
+		h += '<div class="doc-meta">' + escapeHtml(pdfSchoolName()) + " · " + exportTitle() + " · " + new Date().toLocaleDateString("ru-RU") + "</div></div>";
+		h += "<table><thead><tr><th>День</th>";
 		for (let si = 0; si < slots; si++) {
 			const lbl = periodLabel(si);
 			h += "<th>П" + (si + 1) + (lbl ? " " + lbl : "") + "</th>";
 		}
 		h += "</tr></thead><tbody>";
-		for (let di = 0; di < days; di++) {
+		for (let di = 0; di < daysN; di++) {
 			h += "<tr><td class=\"day\">" + dayName(di) + "</td>";
 			for (let si = 0; si < slots; si++) {
 				const cell = cellAt(kind, row.id, di, si);
-				h += "<td>" + (cell ? escapeHtml(cell.label) : "") + "</td>";
+				if (!cell) { h += "<td></td>"; continue; }
+				const bg = cell.conflict ? "#b91c1c" : (pdfBW ? "#e5e7eb" : subjectColor(cell.subject_id));
+				const fg = cell.conflict ? "#ffffff" : "#000000";
+				h += '<td style="background:' + bg + ";color:" + fg + '">' + escapeHtml(cellLabel(cell)) + "</td>";
 			}
 			h += "</tr>";
 		}
 		return h + "</tbody></table></div>";
 	}
+	function subjectColor(sid) {
+		const palette = ["#dbeafe","#dcfce7","#fef9c3","#fae8ff","#ffedd5","#cffafe","#fecaca","#e0e7ff","#d1fae5","#fee2e2","#fef3c7","#ede9fe","#ccfbf1","#fce7f3"];
+		return palette[Math.abs((sid || 0)) % palette.length];
+	}
+	function cellLabel(cell) {
+		const parts = [subjName(subjects, cell.subject_id)];
+		if (pdfShowTeacher) parts.push("(" + teachName(teachers, cell.teacher_id) + ")");
+		if (pdfShowRoom) {
+			const rn = rooms.find(r => r.id === cell.room_id)?.name;
+			if (rn) parts.push(rn);
+		}
+		return parts.filter(Boolean).join(" ");
+	}
+	function pdfSchoolName() {
+		return (schools.find(s => s.id === activeSchoolID)?.name) || "Школа";
+	}
+	function exportTitle() {
+		const m = { school: "вся школа", class: "по классам", teacher: "по учителям", room: "по кабинетам" };
+		return m[exportMode] || "расписание";
+	}
+	function fileSlug(s) {
+		return String(s).replace(/[\\/:*?"<>|]/g, "_").replace(/\s+/g, "_");
+	}
+	function buildLegend() {
+		const used = new Set(schedule.map(e => e.subject_id));
+		let h = '<div class="legend"><h3>Легенда</h3><div class="legend-row">';
+		for (const s of subjects) {
+			if (!used.has(s.id)) continue;
+			const bg = pdfBW ? "#e5e7eb" : subjectColor(s.id);
+			h += '<span class="legend-item"><span class="sw" style="background:' + bg + '"></span>' + escapeHtml(s.name) + "</span>";
+		}
+		h += "</div>";
+		h += '<div class="legend-note">' + (pdfBW ? "Ч/Б: серый — любой предмет; красный — конфликт." : "Красный — конфликт расписания.") + "</div></div>";
+		return h;
+	}
+	function buildConflictList() {
+		if (conflictIDs.size === 0) return "";
+		let h = '<div class="conflicts"><h3>Конфликты</h3><ul>';
+		for (const e of schedule) {
+			if (!conflictIDs.has(e.id)) continue;
+			h += "<li>" + escapeHtml(cellLabel({ subject_id: e.subject_id, teacher_id: e.teacher_id, room_id: e.room_id })) + " — " + dayName(e.day_of_week) + " П" + (e.timeslot + 1) + "</li>";
+		}
+		return h + "</ul></div>";
+	}
 	function buildExportHTML() {
 		const kind = exportMode === "school" ? "class" : exportMode;
 		const list = entityRows(kind);
-		let body = "<h1>Расписание</h1>";
+		let body = "";
 		if (exportMode === "school") {
 			for (const row of list) body += exportBlock(row, kind, false);
+			body += buildLegend();
+			body += buildConflictList();
 		} else {
 			for (const row of list) body += exportBlock(row, kind, true);
 		}
 		const cs = exportMode === "school"
 			? "table{border-collapse:collapse;width:100%}td,th{border:1px solid #999;padding:1px;font-size:8px}.day{font-size:8px}"
 			: "table{border-collapse:collapse;width:100%}td,th{border:1px solid #999;padding:3px;font-size:11px}.day{font-size:11px}";
-		return "<html><head><meta charset=\"utf-8\"><title>Расписание</title><" + "style>"
+		const title = "Расписание_" + fileSlug(pdfSchoolName()) + "_" + new Date().toISOString().slice(0, 10);
+		return "<html><head><meta charset=\"utf-8\"><title>" + escapeHtml(title) + "</title><" + "style>"
 			+ "@page{size:" + pageSize + " " + orientation + ";margin:8mm}"
 			+ "body{font-family:Arial,sans-serif;color:#000}.page{break-after:page}" + cs
+			+ ".doc-header{margin-bottom:4px}.doc-header h2{margin:0;font-size:14px}.doc-meta{color:#444;font-size:10px;margin-bottom:2px}"
+			+ "td{white-space:nowrap;overflow:hidden}"
+			+ ".legend{margin-top:8px}.legend h3{font-size:11px;margin:0 0 2px}.legend-row{display:flex;flex-wrap:wrap;gap:8px}.legend-item{display:inline-flex;align-items:center;gap:3px;font-size:9px}.sw{width:10px;height:10px;display:inline-block;border:1px solid #999}.legend-note{font-size:8px;color:#555;margin-top:2px}"
+			+ ".conflicts{margin-top:8px;font-size:9px}.conflicts h3{font-size:11px;margin:0 0 2px}.conflicts li{color:#b91c1c}"
 			+ "<" + "/style></head><body>" + body + "</body></html>";
 	}
 	function escapeHtml(s) {
@@ -565,6 +629,10 @@
 							<option value="portrait">книжн.</option>
 						</select>
 					</label>
+					<label class="chk"><input type="checkbox" bind:checked={pdfShowTeacher} /> учителя</label>
+					<label class="chk"><input type="checkbox" bind:checked={pdfShowRoom} /> кабинеты</label>
+					<label class="chk"><input type="checkbox" bind:checked={pdfWeekdaysOnly} /> будни</label>
+					<label class="chk"><input type="checkbox" bind:checked={pdfBW} /> ч/б</label>
 					<button on:click={exportPDF}>⬇ PDF</button>
 					<button on:click={exportCSV}>⬇ CSV</button>
 					<button on:click={exportJSON}>⬇ JSON</button>

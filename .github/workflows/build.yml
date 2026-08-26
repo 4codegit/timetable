@@ -10,8 +10,8 @@ permissions:
 
 jobs:
   build-windows:
-    name: Windows installer (.exe + WebView2)
-    runs-on: ubuntu-latest
+    name: Windows installer (.exe + WebView2, with CP-SAT)
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -20,23 +20,40 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
+      - name: Install LLVM (clang-cl)
+        run: choco install llvm -y
+      - name: Install NSIS
+        run: choco install nsis -y
+      - name: Set up MSVC environment
+        uses: ilammy/msvc-dev-cmd@v1
       - name: Install Wails CLI
         run: go install github.com/wailsapp/wails/v2/cmd/wails@latest
-      - name: Build Windows amd64
+      - name: Build OR-Tools Windows C++ binding
+        shell: bash
+        run: bash scripts/build_ortools_windows.sh
+      - name: Build Windows amd64 with -tags ortools
+        shell: bash
+        env:
+          CC: clang-cl
+          CXX: clang-cl
+          CGO_ENABLED: "1"
         run: |
           export PATH=$PATH:$(go env GOPATH)/bin
-          wails build -platform windows/amd64
+          export PATH="/c/Program Files/LLVM/bin:$PATH"
+          wails build -platform windows/amd64 -tags ortools
+          cp third_party/ortools_win/bin/ortools.dll build/bin/
       - name: Stage installer files
+        shell: bash
         run: |
           mkdir -p windows/staging
           cp build/bin/timetable.exe windows/staging/timetable.exe
+          cp third_party/ortools_win/bin/ortools.dll windows/staging/ortools.dll
           curl -L "https://go.microsoft.com/fwlink/?linkid=2124701" -o windows/staging/MicrosoftEdgeWebView2RuntimeInstallerX64.exe
-      - name: Install NSIS
-        run: sudo apt-get update && sudo apt-get install -y nsis
       - name: Build NSIS installer
+        shell: bash
         run: |
-          mkdir -p build
-          makensis -DREPOROOT="$PWD" windows/installer.nsi
+          export PATH="/c/Program Files (x86)/NSIS:$PATH"
+          makensis -DREPOROOT="${{ github.workspace }}" windows/installer.nsi
       - uses: actions/upload-artifact@v4
         with:
           name: timetable-windows-setup
