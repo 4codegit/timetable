@@ -36,7 +36,7 @@ echo ">> Building ortools_csat.dll (C++ binding + OR-Tools) with clang-cl ..."
 export MSYS_NO_PATHCONV=1
 WIN_DIR_W="$(cygpath -w "$WIN_DIR" | tr '\\' '/')"
 BIND_DIR_W="$(cygpath -w "$BIND_DIR" | tr '\\' '/')"
-clang-cl /std:c++20 /EHsc "/I$WIN_DIR_W/include" "/I$BIND_DIR_W" /LD \
+clang-cl /std:c++20 /EHsc /MD "/I$WIN_DIR_W/include" "/I$BIND_DIR_W" /LD \
   "$(cygpath -w "$BIND_DIR/bind.cpp" | tr '\\' '/')" \
   "/Fe$WIN_DIR_W/ortools_csat.dll" \
   "/link" "/LIBPATH:$WIN_DIR_W/lib" ortools.lib
