@@ -40,5 +40,16 @@ CXX=${CXX:-g++}
   -I"$OR_DIR/include" -I"$BIND_DIR" \
   -c "$BIND_DIR/bind.cpp" -o "$BIND_DIR/bind.o"
 
-echo ">> Done. libortools.so + bind.o built."
+echo ">> Merging static dependency archives (absl/protobuf/...) into libortools_deps.a ..."
+DEPS_OBJ="$BIND_DIR/_deps_objs"
+rm -rf "$DEPS_OBJ" && mkdir -p "$DEPS_OBJ"
+for a in "$OR_DIR/lib"/*.a; do
+  d="$DEPS_OBJ/$(basename "$a" .a)"
+  mkdir -p "$d"
+  ( cd "$d" && ar x "$a" ) || true
+done
+find "$DEPS_OBJ" -name '*.o' -print0 | xargs -0 ar rcs "$OR_DIR/lib/libortools_deps.a"
+rm -rf "$DEPS_OBJ"
+
+echo ">> Done. libortools.so + bind.o + libortools_deps.a built."
 echo "   Build with:  go build -tags ortools ./..."
