@@ -36,9 +36,16 @@ echo ">> Building ortools_csat.dll (C++ binding + OR-Tools) with clang-cl ..."
 export MSYS_NO_PATHCONV=1
 WIN_DIR_W="$(cygpath -w "$WIN_DIR" | tr '\\' '/')"
 BIND_DIR_W="$(cygpath -w "$BIND_DIR" | tr '\\' '/')"
+
+# OR-Tools depends on Abseil/Protobuf/etc. Link against every .lib shipped in
+# third_party/ortools_win/lib. Repeat the list so circular back-references
+# between ortools.lib and its dependencies resolve.
+DEPS="$(ls "$WIN_DIR/lib"/*.lib 2>/dev/null | grep -v "/ortools.lib" | sed 's#.*/##' | tr '\n' ' ')"
+echo ">> Linking with deps: $DEPS"
+
 clang-cl /std:c++20 /EHsc /MD "/I$WIN_DIR_W/include" "/I$BIND_DIR_W" /LD \
   "$(cygpath -w "$BIND_DIR/bind.cpp" | tr '\\' '/')" \
   "/Fe$WIN_DIR_W/ortools_csat.dll" \
-  "/link" "/LIBPATH:$WIN_DIR_W/lib" ortools.lib
+  "/link" "/LIBPATH:$WIN_DIR_W/lib" ortools.lib $DEPS ortools.lib $DEPS
 
 echo ">> Done. ortools_csat.dll (+ ortools.dll) ready under third_party/ortools_win."
