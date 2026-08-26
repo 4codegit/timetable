@@ -1,13 +1,16 @@
 #include "bind.h"
 
 #include <cstdlib>
+#include <limits>
 #include <map>
 #include <vector>
 
 #include "ortools/sat/cp_model.h"
+#include "ortools/sat/cp_model_solver.h"
 #include "ortools/sat/sat_parameters.pb.h"
 
 using namespace operations_research::sat;
+using operations_research::Domain;
 
 namespace {
 struct Occ {
@@ -172,7 +175,7 @@ extern "C" ScheduleResult* ortools_solve(
         for (int d = 0; d < D; ++d) {
           for (int a = 0; a + c.value < S; ++a) {
             std::vector<BoolVar> w = windowVars(*set, d, a, a + c.value);
-            cp.AddLinearConstraint(LinearExpr::Sum(w) <= c.value);
+            cp.AddLinearConstraint(LinearExpr::Sum(w), Domain(0, c.value));
           }
         }
         break;
@@ -184,7 +187,7 @@ extern "C" ScheduleResult* ortools_solve(
         if (window <= 0) break;
         for (int d = 0; d < D; ++d) {
           std::vector<BoolVar> w = windowVars(*set, d, start, end);
-          cp.AddLinearConstraint(LinearExpr::Sum(w) <= (window - 1));
+          cp.AddLinearConstraint(LinearExpr::Sum(w), Domain(0, window - 1));
         }
         break;
       }
@@ -198,7 +201,7 @@ extern "C" ScheduleResult* ortools_solve(
             std::vector<BoolVar> more = cellVars(*set, d, s);
             w.insert(w.end(), more.begin(), more.end());
           }
-          cp.AddLinearConstraint(LinearExpr::Sum(w) <= c.value);
+          cp.AddLinearConstraint(LinearExpr::Sum(w), Domain(0, c.value));
         }
         break;
       }
@@ -212,11 +215,10 @@ extern "C" ScheduleResult* ortools_solve(
             std::vector<BoolVar> more = cellVars(*set, d, s);
             w.insert(w.end(), more.begin(), more.end());
           }
-          IntVar p = cp.NewIntVar(0, c.value, "minpen");
-          std::vector<LinearExpr> terms;
-          terms.push_back(LinearExpr::Sum(w));
-          terms.push_back(LinearExpr(p));
-          cp.AddLinearConstraint(LinearExpr::Sum(terms) >= c.value);
+          IntVar p = cp.NewIntVar(Domain(0, c.value)).WithName("minpen");
+          LinearExpr lhs = LinearExpr::Sum(w);
+          lhs = lhs + LinearExpr(p);
+          cp.AddLinearConstraint(lhs, Domain(c.value, std::numeric_limits<int64_t>::max()));
           penalties.push_back(LinearExpr(p));
         }
         break;
@@ -234,17 +236,19 @@ extern "C" ScheduleResult* ortools_solve(
   }
 
   if (!penalties.empty()) {
-    cp.Minimize(LinearExpr::Sum(penalties));
+    LinearExpr obj = penalties[0];
+    for (size_t i = 1; i < penalties.size(); ++i) obj = obj + penalties[i];
+    cp.Minimize(obj);
   }
 
   SatParameters params;
   params.set_max_time_in_seconds(static_cast<double>(time_limit_ms) / 1000.0);
   if (workers > 0) params.set_num_search_workers(workers);
 
-  CpSolver solver;
-  solver.SetParameters(params);
-  const CpSolverStatus status = solver.Solve(cp.Build());
-  if (status != CpSolverStatus::OPTIMAL && status != CpSolverStatus::FEASIBLE) {
+  CpModelProto model_proto = cp.Build();
+  const CpSolverResponse response = SolveWithParameters(model_proto, params);
+  if (response.status() != CpSolverStatus::OPTIMAL &&
+      response.status() != CpSolverStatus::FEASIBLE) {
     return nullptr;
   }
 
@@ -264,7 +268,7 @@ extern "C" ScheduleResult* ortools_solve(
     for (int d = 0; d < D && !found; ++d) {
       for (int s = 0; s < S && !found; ++s) {
         for (int r = 0; r < R && !found; ++r) {
-          if (solver.Value(x[o][d][s][r]) > 0) {
+           if (response.solution(x[o][d][s][r].index()) > 0) {
             res->lesson_ids[o] = occ[o].lesson;
             res->class_ids[o] = occ[o].cls;
             res->teacher_ids[o] = occ[o].teacher;

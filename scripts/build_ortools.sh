@@ -1,25 +1,29 @@
 #!/usr/bin/env bash
-# Downloads prebuilt OR-Tools C++ and builds a combined static archive (libortools_full.a)
-# so the Go OR-Tools solver (build tag `ortools`) can link without enumerating every dependency.
+# Downloads the prebuilt OR-Tools C++ bundle (shared library) and prepares the
+# headers + libs so the Go OR-Tools solver (build tag `ortools`) can link
+# dynamically against libortools.so.
+#
+# OR-Tools ships the solver only as a shared library in this bundle; the static
+# .a files are only for transitive deps (absl/protobuf/...), so we link
+# dynamically and bundle libortools.so next to the final binary at runtime.
 #
 # Usage:  scripts/build_ortools.sh
-# After this, build with:  go build -tags ortools ./...   (or wails build -tags ortools ...)
+# After this, build with:  go build -tags ortools ./...
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OR_DIR="$ROOT/third_party/ortools"
 BIND_DIR="$ROOT/third_party/ortools_bind"
-LIB="$OR_DIR/lib"
 
-# Pick a version. OR_TAG is the GitHub release tag; OR_ASSET is the patch in the file name.
+# OR-Tools release tag + asset patch version (the download URL uses the tag,
+# but the file name carries the full patch version).
 OR_TAG="9.11"
 OR_ASSET="9.11.4210"
-# Prebuilt C++ bundle (Linux x86_64, ubuntu-22.04). For other platforms adjust the URL below.
 OR_URL="https://github.com/google/or-tools/releases/download/v${OR_TAG}/or-tools_amd64_ubuntu-22.04_cpp_v${OR_ASSET}.tar.gz"
 
 mkdir -p "$ROOT/third_party" "$OR_DIR"
 if [ ! -d "$OR_DIR/include" ]; then
-  echo ">> Downloading OR-Tools ${OR_VERSION} C++ ..."
+  echo ">> Downloading OR-Tools ${OR_TAG} (${OR_ASSET}) C++ ..."
   tmp="$(mktemp -d)"
   curl -fL "$OR_URL" -o "$tmp/ortools.tar.gz"
   tar -xzf "$tmp/ortools.tar.gz" -C "$tmp"
@@ -28,27 +32,5 @@ if [ ! -d "$OR_DIR/include" ]; then
   rm -rf "$tmp"
 fi
 
-echo ">> Compiling C++ binding ..."
-CXX=${CXX:-g++}
-"$CXX" -std=c++17 -O2 \
-  -I"$OR_DIR/include" -I"$BIND_DIR" \
-  -c "$BIND_DIR/bind.cpp" -o "$BIND_DIR/bind.o"
-
-echo ">> Merging OR-Tools + deps + binding into libortools_full.a ..."
-mkdir -p "$LIB"
-rm -rf "$BIND_DIR/_objs" && mkdir -p "$BIND_DIR/_objs"
-cp "$BIND_DIR/bind.o" "$BIND_DIR/_objs/"
-
-# Extract every .o from every .a shipped with OR-Tools, plus our binding object.
-for a in "$LIB"/*.a; do
-  [ -e "$a" ] || continue
-  d="$BIND_DIR/_objs/$(basename "$a" .a)"
-  mkdir -p "$d"
-  ( cd "$d" && ar x "$a" )
-done
-
-# Re-pack everything into one fat archive.
-ar rcs "$LIB/libortools_full.a" "$BIND_DIR"/_objs/*.o "$BIND_DIR"/_objs/*/*.o
-
-echo ">> Done. libortools_full.a built at $LIB/libortools_full.a"
-echo "   Now build with:  go build -tags ortools ./...   (or: wails build -platform windows/amd64 -tags ortools)"
+echo ">> OR-Tools ready at $OR_DIR (link with -lortools; bundle libortools.so at runtime)."
+echo "   Build with:  go build -tags ortools ./..."

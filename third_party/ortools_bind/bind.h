@@ -17,6 +17,17 @@ typedef struct {
   int is_hard;
 } CConstraint;
 
+typedef struct {
+  int count;
+  int* lesson_ids;
+  int* class_ids;
+  int* teacher_ids;
+  int* subject_ids;
+  int* room_ids;
+  int* days;
+  int* slots;
+} ScheduleResult;
+
 /* Runs OR-Tools CP-SAT. Returns NULL if infeasible / unavailable.
    Arrays are caller-owned except the returned ScheduleResult (freed via free_schedule_result).
    room_type / lesson_req_type use 0 for "any", otherwise a stable integer id per type string. */
