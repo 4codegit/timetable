@@ -1,0 +1,9 @@
+node_modules/
+frontend/node_modules/
+build/
+windows/staging/
+*.db
+*.db-journal
+frontend/dist/
+dist/
+.DS_Store

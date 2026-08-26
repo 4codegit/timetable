@@ -1,0 +1,46 @@
+#ifndef ORTOOLS_BIND_H
+#define ORTOOLS_BIND_H
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+typedef struct {
+  int ctype;        // 0 teacher_unavailable, 1 class_unavailable, 2 room_unavailable,
+                    // 3 max_consecutive, 4 lunch_break, 5 max_lessons_per_day, 6 min_lessons_per_day
+  int entity_type;  // 0 teacher, 1 class, 2 room, 3 school
+  int entity_id;
+  int day;
+  int slot_start;
+  int slot_end;
+  int value;        // numeric parameter (max/min count, or window bound)
+  int is_hard;
+} CConstraint;
+
+/* Runs OR-Tools CP-SAT. Returns NULL if infeasible / unavailable.
+   Arrays are caller-owned except the returned ScheduleResult (freed via free_schedule_result).
+   room_type / lesson_req_type use 0 for "any", otherwise a stable integer id per type string. */
+ScheduleResult* ortools_solve(
+  int num_lessons,
+  const int* lesson_hours,
+  const int* lesson_class,
+  const int* lesson_teacher,
+  const int* lesson_subject,
+  const int* lesson_req_type,
+  int num_rooms,
+  const int* room_ids,
+  const int* room_type,
+  int days_per_week,
+  int slots_per_day,
+  int num_constraints,
+  const CConstraint* constraints,
+  int time_limit_ms,
+  int workers);
+
+void free_schedule_result(ScheduleResult* r);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif

@@ -1,0 +1,128 @@
+name: Build Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    name: Windows installer (.exe + WebView2)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install Wails CLI
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@latest
+      - name: Build Windows amd64
+        run: |
+          export PATH=$PATH:$(go env GOPATH)/bin
+          wails build -platform windows/amd64
+      - name: Stage installer files
+        run: |
+          mkdir -p windows/staging
+          cp build/bin/timetable.exe windows/staging/timetable.exe
+          curl -L "https://go.microsoft.com/fwlink/?linkid=2124701" -o windows/staging/MicrosoftEdgeWebView2RuntimeInstallerX64.exe
+      - name: Install NSIS
+        run: sudo apt-get update && sudo apt-get install -y nsis
+      - name: Build NSIS installer
+        run: makensis windows/installer.nsi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: timetable-windows-setup
+          path: build/timetable-setup-x64.exe
+
+  build-linux:
+    name: Linux (.deb / .rpm / tarball)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install WebView + packaging deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.0-dev libwebkit2gtk-4.1-dev librsvg2-dev pkg-config ruby ruby-dev
+          sudo gem install fpm
+      - name: Install Wails CLI
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@latest
+      - name: Build Linux amd64
+        run: |
+          export PATH=$PATH:$(go env GOPATH)/bin
+          wails build -platform linux/amd64
+      - name: Package .deb + .rpm
+        run: |
+          export PATH=$PATH:$(go env GOPATH)/bin
+          mkdir -p build/linux
+          fpm -s dir -t deb -n timetable -v 1.0.0 --architecture amd64 \
+            build/bin/timetable=/opt/timetable/timetable \
+            -p build/linux
+          fpm -s dir -t rpm -n timetable -v 1.0.0 --architecture amd64 \
+            build/bin/timetable=/opt/timetable/timetable \
+            -p build/linux
+      - name: Tarball
+        run: tar -czf build/timetable-linux.tar.gz -C build/bin timetable
+      - uses: actions/upload-artifact@v4
+        with:
+          name: timetable-linux
+          path: |
+            build/linux/*
+            build/timetable-linux.tar.gz
+
+  build-precise:
+    name: Linux precise solver (OR-Tools CP-SAT, -tags ortools)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install WebView + build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.0-dev libwebkit2gtk-4.1-dev librsvg2-dev pkg-config build-essential
+      - name: Install Wails CLI
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@latest
+      - name: Build OR-Tools C++ binding
+        run: bash scripts/build_ortools.sh
+      - name: Build Linux amd64 with -tags ortools
+        run: |
+          export PATH=$PATH:$(go env GOPATH)/bin
+          wails build -platform linux/amd64 -tags ortools
+      - uses: actions/upload-artifact@v4
+        with:
+          name: timetable-linux-precise
+          path: build/bin/*
+
+  release:
+    name: GitHub Release
+    needs: [build-windows, build-linux, build-precise]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: List artifacts
+        run: ls -R artifacts
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/timetable-windows-setup/*
+            artifacts/timetable-linux/*
+            artifacts/timetable-linux-precise/*
