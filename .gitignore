@@ -8,5 +8,6 @@ frontend/dist/
 dist/
 .DS_Store
 third_party/ortools/
-third_party/ortools/
+third_party/ortools_win/
 third_party/ortools_bind/bind.o
+third_party/ortools_bind/bind_win.o

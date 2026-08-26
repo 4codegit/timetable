@@ -36,6 +36,6 @@ echo ">> Compiling C++ binding (bind.cpp) with clang-cl ..."
 export PATH="/c/Program Files/LLVM/bin:$PATH"
 clang-cl /std:c++20 /EHsc \
   -I"$WIN_DIR/include" -I"$BIND_DIR" \
-  -c "$BIND_DIR/bind.cpp" -o "$BIND_DIR/bind_win.obj"
+  -c "$BIND_DIR/bind.cpp" -o "$BIND_DIR/bind_win.o"
 
 echo ">> Done. ortools.lib + ortools.dll + bind_win.obj ready under third_party/ortools_win."
