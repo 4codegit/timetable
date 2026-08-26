@@ -73,13 +73,11 @@ jobs:
           fpm -s dir -t rpm -n timetable -v 1.0.0 --architecture amd64 -p build/linux/timetable_1.0.0_amd64.rpm \
             build/bin/timetable=/opt/timetable/timetable
       - name: Tarball
-        run: tar -czf build/timetable-linux.tar.gz -C build/bin timetable
+        run: tar -czf build/linux/timetable-linux.tar.gz -C build/bin timetable
       - uses: actions/upload-artifact@v4
         with:
           name: timetable-linux
-          path: |
-            build/linux/*
-            build/timetable-linux.tar.gz
+          path: build/linux
 
   build-precise:
     name: Linux precise solver (OR-Tools CP-SAT, -tags ortools)
