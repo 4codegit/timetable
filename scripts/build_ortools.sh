@@ -11,10 +11,11 @@ OR_DIR="$ROOT/third_party/ortools"
 BIND_DIR="$ROOT/third_party/ortools_bind"
 LIB="$OR_DIR/lib"
 
-# Pick a version. Update OR_VERSION if you need a newer OR-Tools.
-OR_VERSION="9.11.4210"
+# Pick a version. OR_TAG is the GitHub release tag; OR_ASSET is the patch in the file name.
+OR_TAG="9.11"
+OR_ASSET="9.11.4210"
 # Prebuilt C++ bundle (Linux x86_64, ubuntu-22.04). For other platforms adjust the URL below.
-OR_URL="https://github.com/google/or-tools/releases/download/v${OR_VERSION}/or-tools_amd64_ubuntu-22.04_cpp_v${OR_VERSION}.tar.gz"
+OR_URL="https://github.com/google/or-tools/releases/download/v${OR_TAG}/or-tools_amd64_ubuntu-22.04_cpp_v${OR_ASSET}.tar.gz"
 
 mkdir -p "$ROOT/third_party" "$OR_DIR"
 if [ ! -d "$OR_DIR/include" ]; then
