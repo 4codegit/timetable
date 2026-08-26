@@ -106,12 +106,16 @@ jobs:
           export PATH=$PATH:$(go env GOPATH)/bin
           wails build -platform linux/amd64 -tags ortools
           cp third_party/ortools/lib/libortools.so* build/bin/
+      - name: Package precise artifacts
+        run: |
+          mkdir -p build/precise
+          cp build/bin/timetable build/precise/
+          cp build/bin/libortools.so* build/precise/
+          tar -czf build/precise/timetable-linux-precise.tar.gz -C build/precise timetable libortools.so*
       - uses: actions/upload-artifact@v4
         with:
           name: timetable-linux-precise
-          path: |
-            build/bin/timetable
-            build/bin/libortools.so*
+          path: build/precise
 
   release:
     name: GitHub Release
