@@ -111,7 +111,7 @@ jobs:
           mkdir -p build/precise
           cp build/bin/timetable build/precise/
           cp -L build/bin/libortools.so* build/precise/
-          tar -czf build/precise/timetable-linux-precise.tar.gz -C build/precise timetable libortools.so*
+          tar -czf build/timetable-linux-precise.tar.gz -C build/precise .
       - uses: actions/upload-artifact@v4
         with:
           name: timetable-linux-precise
