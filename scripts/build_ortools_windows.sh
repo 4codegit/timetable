@@ -32,10 +32,10 @@ if [ ! -d "$WIN_DIR/include" ]; then
   rm -rf "$tmp"
 fi
 
-echo ">> Compiling C++ binding (bind.cpp) with clang-cl ..."
-export PATH="/c/Program Files/LLVM/bin:$PATH"
-clang-cl /std:c++20 /EHsc \
-  -I"$WIN_DIR/include" -I"$BIND_DIR" \
-  -c "$BIND_DIR/bind.cpp" -o "$BIND_DIR/bind_win.o"
+echo ">> Compiling C++ binding (bind.cpp) with MSVC cl ..."
+WIN_DIR_W="$(cygpath -w "$WIN_DIR")"
+BIND_DIR_W="$(cygpath -w "$BIND_DIR")"
+cl /std:c++20 /EHsc "/I$WIN_DIR_W\\include" "/I$BIND_DIR_W" \
+  /c "$(cygpath -w "$BIND_DIR/bind.cpp")" "/Fo$BIND_DIR_W\\bind_win.o"
 
 echo ">> Done. ortools.lib + ortools.dll + bind_win.obj ready under third_party/ortools_win."

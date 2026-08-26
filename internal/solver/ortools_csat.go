@@ -5,7 +5,7 @@ package solver
 /*
 #cgo linux CFLAGS: -I${SRCDIR}/../../third_party/ortools/include -I${SRCDIR}/../../third_party/ortools_bind
 #cgo linux LDFLAGS: ${SRCDIR}/../../third_party/ortools_bind/bind.o -Wl,--start-group -L${SRCDIR}/../../third_party/ortools/lib -lortools -lortools_deps -Wl,--end-group -lstdc++ -lpthread -ldl -Wl,-rpath,$ORIGIN
-#cgo windows CFLAGS: -I${SRCDIR}/../../third_party/ortools_win/include -I${SRCDIR}/../../third_party/ortools_bind -std=c++17
+#cgo windows CFLAGS: -I${SRCDIR}/../../third_party/ortools_win/include -I${SRCDIR}/../../third_party/ortools_bind
 #cgo windows LDFLAGS: ${SRCDIR}/../../third_party/ortools_bind/bind_win.o -L${SRCDIR}/../../third_party/ortools_win/lib -lortools
 #include <stdlib.h>
 #include "bind.h"

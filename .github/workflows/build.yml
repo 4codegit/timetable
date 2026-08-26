@@ -20,8 +20,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
-      - name: Install LLVM (clang-cl)
-        run: choco install llvm -y
       - name: Install NSIS
         run: choco install nsis -y
       - name: Set up MSVC environment
@@ -34,12 +32,11 @@ jobs:
       - name: Build Windows amd64 with -tags ortools
         shell: bash
         env:
-          CC: clang-cl
-          CXX: clang-cl
+          CC: cl
+          CXX: cl
           CGO_ENABLED: "1"
         run: |
           export PATH=$PATH:$(go env GOPATH)/bin
-          export PATH="/c/Program Files/LLVM/bin:$PATH"
           wails build -platform windows/amd64 -tags ortools
           cp third_party/ortools_win/bin/ortools.dll build/bin/
       - name: Stage installer files
