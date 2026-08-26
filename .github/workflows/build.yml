@@ -79,7 +79,7 @@ jobs:
       - name: Install WebView build deps
         run: |
           sudo apt-get update
-          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.0-dev librsvg2-dev pkg-config build-essential wget
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev librsvg2-dev pkg-config build-essential wget
       - name: Install Wails CLI
         run: go install github.com/wailsapp/wails/v2/cmd/wails@latest
       - name: Build OR-Tools C++ binding
@@ -89,7 +89,7 @@ jobs:
           LD_LIBRARY_PATH: ${{ github.workspace }}/third_party/ortools/lib
         run: |
           export PATH=$PATH:$(go env GOPATH)/bin
-          wails build -platform linux/amd64 -tags ortools
+          wails build -platform linux/amd64 -tags "ortools webkit2_41"
           cp -L third_party/ortools/lib/libortools.so* build/bin/
       - name: Build AppImage (single-file Linux package)
         run: |
