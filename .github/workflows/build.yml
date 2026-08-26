@@ -55,10 +55,12 @@ jobs:
             [ -f "build/bin/$d" ] && cp "build/bin/$d" windows/staging/
           done
           curl -L "https://go.microsoft.com/fwlink/?linkid=2124701" -o windows/staging/MicrosoftEdgeWebView2RuntimeInstallerX64.exe
+          echo "=== staging contents ==="; ls -la windows/staging; echo "=== build/bin ==="; ls -la build/bin
       - name: Build NSIS installer
         shell: bash
         run: |
           export PATH="/c/Program Files (x86)/NSIS:$PATH"
+          echo "=== staging contents (NSIS step) ==="; ls -la windows/staging
           makensis -DREPOROOT="${{ github.workspace }}" windows/installer.nsi
       - uses: actions/upload-artifact@v4
         with:
