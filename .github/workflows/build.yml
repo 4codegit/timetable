@@ -32,10 +32,11 @@ jobs:
       - name: Build Windows amd64 with -tags ortools
         shell: bash
         env:
-          CGO_ENABLED: "0"
+          CGO_ENABLED: "1"
+          CC: "gcc"
           MSYS_NO_PATHCONV: "1"
         run: |
-          export PATH=$PATH:$(go env GOPATH)/bin
+          export PATH="/c/mingw64/bin:$PATH:$(go env GOPATH)/bin"
           wails build -platform windows/amd64 -tags ortools
           cp third_party/ortools_win/bin/ortools.dll build/bin/
           cp third_party/ortools_win/ortools_csat.dll build/bin/
