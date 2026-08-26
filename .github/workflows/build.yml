@@ -20,8 +20,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
-      - name: Install NSIS
-        run: choco install nsis -y
+      - name: Install LLVM (clang-cl) and NSIS
+        run: choco install llvm nsis -y
       - name: Set up MSVC environment
         uses: ilammy/msvc-dev-cmd@v1
       - name: Install Wails CLI
@@ -36,7 +36,8 @@ jobs:
           MSYS_NO_PATHCONV: "1"
         run: |
           export PATH=$PATH:$(go env GOPATH)/bin
-          go env -w CC=cl CXX=cl CGO_ENABLED=1
+          export PATH="/c/Program Files/LLVM/bin:$PATH"
+          go env -w CC=clang-cl CXX=clang-cl CGO_ENABLED=1
           wails build -platform windows/amd64 -tags ortools
           cp third_party/ortools_win/bin/ortools.dll build/bin/
       - name: Stage installer files
