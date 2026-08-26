@@ -18,24 +18,12 @@ Section "Install"
   SetOutPath "$INSTDIR"
   File "${REPOROOT}\windows\staging\timetable.exe"
   File "${REPOROOT}\windows\staging\ortools_csat.dll"
-  !ifexist "${REPOROOT}\windows\staging\ortools.dll"
-    File "${REPOROOT}\windows\staging\ortools.dll"
-  !endif
-  !ifexist "${REPOROOT}\windows\staging\vcruntime140.dll"
-    File "${REPOROOT}\windows\staging\vcruntime140.dll"
-  !endif
-  !ifexist "${REPOROOT}\windows\staging\vcruntime140_1.dll"
-    File "${REPOROOT}\windows\staging\vcruntime140_1.dll"
-  !endif
-  !ifexist "${REPOROOT}\windows\staging\msvcp140.dll"
-    File "${REPOROOT}\windows\staging\msvcp140.dll"
-  !endif
-  !ifexist "${REPOROOT}\windows\staging\msvcp140_1.dll"
-    File "${REPOROOT}\windows\staging\msvcp140_1.dll"
-  !endif
-  !ifexist "${REPOROOT}\windows\staging\msvcp140_codecvt_ids.dll"
-    File "${REPOROOT}\windows\staging\msvcp140_codecvt_ids.dll"
-  !endif
+  File /nonfatal "${REPOROOT}\windows\staging\ortools.dll"
+  File /nonfatal "${REPOROOT}\windows\staging\vcruntime140.dll"
+  File /nonfatal "${REPOROOT}\windows\staging\vcruntime140_1.dll"
+  File /nonfatal "${REPOROOT}\windows\staging\msvcp140.dll"
+  File /nonfatal "${REPOROOT}\windows\staging\msvcp140_1.dll"
+  File /nonfatal "${REPOROOT}\windows\staging\msvcp140_codecvt_ids.dll"
   File "${REPOROOT}\windows\staging\MicrosoftEdgeWebView2RuntimeInstallerX64.exe"
 
   DetailPrint "Установка WebView2 Runtime (офлайн)..."
