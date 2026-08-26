@@ -17,8 +17,25 @@ SetCompressor /SOLID lzma
 Section "Install"
   SetOutPath "$INSTDIR"
   File "${REPOROOT}/windows/staging/timetable.exe"
-  File "${REPOROOT}/windows/staging/ortools.dll"
   File "${REPOROOT}/windows/staging/ortools_csat.dll"
+  !ifexist "${REPOROOT}/windows/staging/ortools.dll"
+    File "${REPOROOT}/windows/staging/ortools.dll"
+  !endif
+  !ifexist "${REPOROOT}/windows/staging/vcruntime140.dll"
+    File "${REPOROOT}/windows/staging/vcruntime140.dll"
+  !endif
+  !ifexist "${REPOROOT}/windows/staging/vcruntime140_1.dll"
+    File "${REPOROOT}/windows/staging/vcruntime140_1.dll"
+  !endif
+  !ifexist "${REPOROOT}/windows/staging/msvcp140.dll"
+    File "${REPOROOT}/windows/staging/msvcp140.dll"
+  !endif
+  !ifexist "${REPOROOT}/windows/staging/msvcp140_1.dll"
+    File "${REPOROOT}/windows/staging/msvcp140_1.dll"
+  !endif
+  !ifexist "${REPOROOT}/windows/staging/msvcp140_codecvt_ids.dll"
+    File "${REPOROOT}/windows/staging/msvcp140_codecvt_ids.dll"
+  !endif
   File "${REPOROOT}/windows/staging/MicrosoftEdgeWebView2RuntimeInstallerX64.exe"
 
   DetailPrint "Установка WebView2 Runtime (офлайн)..."
@@ -35,6 +52,11 @@ Section "Uninstall"
   Delete "$INSTDIR\timetable.exe"
   Delete "$INSTDIR\ortools.dll"
   Delete "$INSTDIR\ortools_csat.dll"
+  Delete "$INSTDIR\vcruntime140.dll"
+  Delete "$INSTDIR\vcruntime140_1.dll"
+  Delete "$INSTDIR\msvcp140.dll"
+  Delete "$INSTDIR\msvcp140_1.dll"
+  Delete "$INSTDIR\msvcp140_codecvt_ids.dll"
   Delete "$INSTDIR\MicrosoftEdgeWebView2RuntimeInstallerX64.exe"
   Delete "$INSTDIR\uninstall.exe"
   RMDir "$INSTDIR"
