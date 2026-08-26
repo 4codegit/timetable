@@ -35,6 +35,7 @@ jobs:
           CC: cl
           CXX: cl
           CGO_ENABLED: "1"
+          MSYS_NO_PATHCONV: "1"
         run: |
           export PATH=$PATH:$(go env GOPATH)/bin
           wails build -platform windows/amd64 -tags ortools

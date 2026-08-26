@@ -33,9 +33,10 @@ if [ ! -d "$WIN_DIR/include" ]; then
 fi
 
 echo ">> Compiling C++ binding (bind.cpp) with MSVC cl ..."
-WIN_DIR_W="$(cygpath -w "$WIN_DIR")"
-BIND_DIR_W="$(cygpath -w "$BIND_DIR")"
-cl /std:c++20 /EHsc "/I$WIN_DIR_W\\include" "/I$BIND_DIR_W" \
-  /c "$(cygpath -w "$BIND_DIR/bind.cpp")" "/Fo$BIND_DIR_W\\bind_win.o"
+export MSYS_NO_PATHCONV=1
+WIN_DIR_W="$(cygpath -w "$WIN_DIR" | tr '\\' '/')"
+BIND_DIR_W="$(cygpath -w "$BIND_DIR" | tr '\\' '/')"
+cl /std:c++20 /EHsc "/I$WIN_DIR_W/include" "/I$BIND_DIR_W" \
+  /c "$(cygpath -w "$BIND_DIR/bind.cpp" | tr '\\' '/')" "/Fo$BIND_DIR_W/bind_win.o"
 
-echo ">> Done. ortools.lib + ortools.dll + bind_win.obj ready under third_party/ortools_win."
+echo ">> Done. ortools.lib + ortools.dll + bind_win.o ready under third_party/ortools_win."
