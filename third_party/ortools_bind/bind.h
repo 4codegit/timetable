@@ -1,6 +1,12 @@
 #ifndef ORTOOLS_BIND_H
 #define ORTOOLS_BIND_H
 
+#ifdef _WIN32
+#define ORTOOLS_EXPORT __declspec(dllexport)
+#else
+#define ORTOOLS_EXPORT
+#endif
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -31,24 +37,24 @@ typedef struct {
 /* Runs OR-Tools CP-SAT. Returns NULL if infeasible / unavailable.
    Arrays are caller-owned except the returned ScheduleResult (freed via free_schedule_result).
    room_type / lesson_req_type use 0 for "any", otherwise a stable integer id per type string. */
-ScheduleResult* ortools_solve(
-  int num_lessons,
-  const int* lesson_hours,
-  const int* lesson_class,
-  const int* lesson_teacher,
-  const int* lesson_subject,
-  const int* lesson_req_type,
-  int num_rooms,
-  const int* room_ids,
-  const int* room_type,
-  int days_per_week,
-  int slots_per_day,
-  int num_constraints,
-  const CConstraint* constraints,
-  int time_limit_ms,
-  int workers);
+ORTOOLS_EXPORT ScheduleResult* ortools_solve(
+   int num_lessons,
+   const int* lesson_hours,
+   const int* lesson_class,
+   const int* lesson_teacher,
+   const int* lesson_subject,
+   const int* lesson_req_type,
+   int num_rooms,
+   const int* room_ids,
+   const int* room_type,
+   int days_per_week,
+   int slots_per_day,
+   int num_constraints,
+   const CConstraint* constraints,
+   int time_limit_ms,
+   int workers);
 
-void free_schedule_result(ScheduleResult* r);
+ORTOOLS_EXPORT void free_schedule_result(ScheduleResult* r);
 
 #ifdef __cplusplus
 }

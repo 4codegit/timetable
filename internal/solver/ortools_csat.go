@@ -1,12 +1,10 @@
-//go:build ortools
+//go:build linux && ortools
 
 package solver
 
 /*
 #cgo linux CFLAGS: -I${SRCDIR}/../../third_party/ortools/include -I${SRCDIR}/../../third_party/ortools_bind
 #cgo linux LDFLAGS: ${SRCDIR}/../../third_party/ortools_bind/bind.o -Wl,--start-group -L${SRCDIR}/../../third_party/ortools/lib -lortools -lortools_deps -Wl,--end-group -lstdc++ -lpthread -ldl -Wl,-rpath,$ORIGIN
-#cgo windows CFLAGS: -I${SRCDIR}/../../third_party/ortools_win/include -I${SRCDIR}/../../third_party/ortools_bind
-#cgo windows LDFLAGS: ${SRCDIR}/../../third_party/ortools_bind/bind_win.o -L${SRCDIR}/../../third_party/ortools_win/lib -lortools
 #include <stdlib.h>
 #include "bind.h"
 */
@@ -22,44 +20,6 @@ import (
 
 func init() {
 	preciseSolver = ortoolsSolve
-}
-
-func constraintTypeCode(t string) int {
-	switch t {
-	case "teacher_unavailable":
-		return 0
-	case "class_unavailable":
-		return 1
-	case "room_unavailable":
-		return 2
-	case "max_consecutive":
-		return 3
-	case "lunch_break":
-		return 4
-	case "max_lessons_per_day":
-		return 5
-	case "min_lessons_per_day":
-		return 6
-	case "prefer_morning":
-		return 7
-	case "max_gaps":
-		return 8
-	}
-	return -1
-}
-
-func entityTypeCode(t string) int {
-	switch t {
-	case "teacher":
-		return 0
-	case "class":
-		return 1
-	case "room":
-		return 2
-	case "school":
-		return 3
-	}
-	return -1
 }
 
 // ortoolsSolve delegates to the OR-Tools CP-SAT C++ binding.

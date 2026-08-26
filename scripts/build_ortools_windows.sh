@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # Downloads the prebuilt OR-Tools C++ bundle for Windows (MSVC / Visual Studio 2022)
-# and compiles our C++ binding (bind.cpp) into bind_win.obj so the Go OR-Tools solver
-# (build tag `ortools`) can link against ortools.dll on Windows.
+# and builds our C++ binding (bind.cpp) into a self-contained DLL (ortools_csat.dll)
+# which the Go OR-Tools solver (build tag `ortools`, Windows) loads at runtime via
+# syscall.LoadLibrary. This avoids cgo entirely on Windows.
 #
 # Usage (Windows runner, after VS + LLVM/clang-cl are available):
 #   bash scripts/build_ortools_windows.sh
-# After this, build with:  go build -tags ortools ./...
 
 set -euo pipefail
 
@@ -32,11 +32,13 @@ if [ ! -d "$WIN_DIR/include" ]; then
   rm -rf "$tmp"
 fi
 
-echo ">> Compiling C++ binding (bind.cpp) with clang-cl ..."
+echo ">> Building ortools_csat.dll (C++ binding + OR-Tools) with clang-cl ..."
 export MSYS_NO_PATHCONV=1
 WIN_DIR_W="$(cygpath -w "$WIN_DIR" | tr '\\' '/')"
 BIND_DIR_W="$(cygpath -w "$BIND_DIR" | tr '\\' '/')"
-clang-cl /std:c++20 /EHsc "/I$WIN_DIR_W/include" "/I$BIND_DIR_W" \
-  /c "$(cygpath -w "$BIND_DIR/bind.cpp" | tr '\\' '/')" "/Fo$BIND_DIR_W/bind_win.o"
+clang-cl /std:c++20 /EHsc "/I$WIN_DIR_W/include" "/I$BIND_DIR_W" /LD \
+  "$(cygpath -w "$BIND_DIR/bind.cpp" | tr '\\' '/')" \
+  "/Fe$WIN_DIR_W/ortools_csat.dll" \
+  "/link" "/LIBPATH:$WIN_DIR_W/lib" ortools.lib
 
-echo ">> Done. ortools.lib + ortools.dll + bind_win.o ready under third_party/ortools_win."
+echo ">> Done. ortools_csat.dll (+ ortools.dll) ready under third_party/ortools_win."

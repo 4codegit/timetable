@@ -32,20 +32,20 @@ jobs:
       - name: Build Windows amd64 with -tags ortools
         shell: bash
         env:
-          CGO_ENABLED: "1"
+          CGO_ENABLED: "0"
           MSYS_NO_PATHCONV: "1"
         run: |
           export PATH=$PATH:$(go env GOPATH)/bin
-          export PATH="/c/Program Files/LLVM/bin:$PATH"
-          go env -w CC=clang-cl CXX=clang-cl CGO_ENABLED=1
           wails build -platform windows/amd64 -tags ortools
           cp third_party/ortools_win/bin/ortools.dll build/bin/
+          cp third_party/ortools_win/ortools_csat.dll build/bin/
       - name: Stage installer files
         shell: bash
         run: |
           mkdir -p windows/staging
           cp build/bin/timetable.exe windows/staging/timetable.exe
           cp third_party/ortools_win/bin/ortools.dll windows/staging/ortools.dll
+          cp third_party/ortools_win/ortools_csat.dll windows/staging/ortools_csat.dll
           curl -L "https://go.microsoft.com/fwlink/?linkid=2124701" -o windows/staging/MicrosoftEdgeWebView2RuntimeInstallerX64.exe
       - name: Build NSIS installer
         shell: bash
