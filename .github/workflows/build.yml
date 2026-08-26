@@ -86,7 +86,7 @@ jobs:
             build/bin/libortools.so.9=/opt/timetable/libortools.so.9 \
             build/bin/libortools.so.9.11.4210=/opt/timetable/libortools.so.9.11.4210
       - name: Tarball
-        run: tar -czf build/linux/timetable-linux.tar.gz -C build/bin timetable libortools.so*
+        run: tar -czf build/linux/timetable-linux.tar.gz -C build/bin .
       - uses: actions/upload-artifact@v4
         with:
           name: timetable-linux
