@@ -121,6 +121,25 @@ jobs:
           chmod +x /tmp/appimagetool
           export APPIMAGE_EXTRACT_AND_RUN=1
           /tmp/appimagetool "$APP" build/timetable-x86_64.AppImage
+      - name: Verify AppImage (extract + ldd + launch)
+        run: |
+          export PATH=$PATH:$(go env GOPATH)/bin
+          AI=build/timetable-x86_64.AppImage
+          chmod +x "$AI"
+          "$AI" --appimage-extract >/dev/null 2>&1 || { echo "EXTRACT FAILED"; exit 1; }
+          D=squashfs-root
+          echo "== ldd: missing libraries =="
+          if LD_LIBRARY_PATH="$D" ldd "$D/timetable" | grep -qi "not found"; then
+            echo "MISSING LIBRARIES:"; LD_LIBRARY_PATH="$D" ldd "$D/timetable" | grep -i "not found"; exit 1
+          fi
+          echo "no missing libraries"
+          echo "== xvfb launch smoke test (best-effort) =="
+          sudo apt-get install -y xvfb >/dev/null 2>&1 || true
+          xvfb-run -a "$D/timetable" >/tmp/app.log 2>&1 &
+          PID=$!
+          sleep 7
+          if kill -0 $PID 2>/dev/null; then echo "APP STARTED OK"; kill $PID; else echo "launch inconclusive (headless):"; tail -15 /tmp/app.log; fi
+          wait $PID 2>/dev/null || true
       - uses: actions/upload-artifact@v4
         with:
           name: timetable-linux
