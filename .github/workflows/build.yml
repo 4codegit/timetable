@@ -186,6 +186,10 @@ jobs:
           done
           export LD_LIBRARY_PATH="$HERE/usr/lib:$LD_LIBRARY_PATH"
           export WEBKIT_EXEC_PATH="$HERE/usr/lib/webkit2gtk-4.1"
+          # Force the X11 GDK backend. On a Wayland session WebKit would otherwise use the GBM/DRM EGL
+          # platform, which fails with "Could not create default EGL display: EGL_BAD_PARAMETER" (white
+          # screen). Under XWayland the X11 EGL platform works with the host's Mesa.
+          export GDK_BACKEND=x11
           # Redirect WebKit's hardcoded helper/injected-bundle path (patched in libwebkit) to our bundled copy
           mkdir -p /tmp/tw
           ln -sfn "$HERE/usr/lib/webkit2gtk-4.1" /tmp/tw/webkit2gtk-4.1
@@ -200,7 +204,7 @@ jobs:
           chmod +x "$AI"
           docker run --rm -v "$AI":/app.AppImage:Z fedora:40 bash -c '
             set -e
-            dnf install -y --setopt=install_weak_deps=False --setopt=tsflags=nodocs xorg-x11-server-Xvfb mesa-dri-drivers mesa-libgbm libglvnd-egl mesa-libEGL mesa-libwayland libxkbcommon wayland 2>&1 | tail -2
+            dnf install -y --setopt=install_weak_deps=False --setopt=tsflags=nodocs xorg-x11-server-Xvfb mesa-dri-drivers mesa-libgbm libglvnd-egl mesa-libEGL libwayland-client libwayland-cursor libwayland-egl libwayland-server libxkbcommon libxkbcommon-x11 2>&1 | tail -2
             xvfb-run -a /app.AppImage --appimage-extract-and-run >/tmp/app.log 2>&1 &
             PID=$!
             sleep 12
