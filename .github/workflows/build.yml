@@ -108,18 +108,16 @@ jobs:
           cp build/linux/timetable.desktop "$APP/timetable.desktop"
           cp build/appicon.png "$APP/usr/share/icons/hicolor/512x512/apps/timetable.png"
           cp build/appicon.png "$APP/timetable.png"
-          # Download linuxdeploy + appimagetool as AppImages, then extract them and run the
-          # extracted binaries directly (no FUSE / AppImage runtime needed on the runner).
-          curl -fsSL --retry 3 -o /tmp/linuxdeploy.AppImage https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
+          # linuxdeploy + appimagetool are vendored (extracted) under tools/ so the build needs
+          # no network access and no FUSE/AppImage runtime on the runner.
           cp scripts/linuxdeploy-plugin-gtk.sh /tmp/linuxdeploy-plugin-gtk
-          chmod +x /tmp/linuxdeploy.AppImage /tmp/linuxdeploy-plugin-gtk
+          chmod +x /tmp/linuxdeploy-plugin-gtk
           export PATH=/tmp:$PATH
-          mkdir -p /tmp/ld_extract && ( cd /tmp/ld_extract && /tmp/linuxdeploy.AppImage --appimage-extract >/dev/null 2>&1 ) || { echo "LINUXDEPLOY EXTRACT FAILED"; exit 1; }
-          LINUXDEPLOY_BIN=/tmp/ld_extract/squashfs-root/AppRun
-          export LINUXDEPLOY="$LINUXDEPLOY_BIN"
+          chmod +x "$PWD/tools/linuxdeploy/usr/bin/linuxdeploy" "$PWD/tools/appimagetool/AppRun" 2>/dev/null || true
+          export LINUXDEPLOY="$PWD/tools/linuxdeploy/AppRun"
           export DEPLOY_GTK_VERSION=3
           export LD_LIBRARY_PATH="$APP/usr/lib:${LD_LIBRARY_PATH:-}"
-          "$LINUXDEPLOY_BIN" --appdir "$APP" --executable "$APP/usr/bin/timetable" --plugin gtk || { echo "LINUXDEPLOY RUN FAILED"; exit 1; }
+          "$LINUXDEPLOY" --appdir "$APP" --executable "$APP/usr/bin/timetable" --plugin gtk || { echo "LINUXDEPLOY RUN FAILED"; exit 1; }
           # Bundle WebKit helper processes (WebProcess/NetworkProcess/GPUProcess) so the UI renders fully offline
           for f in \
             /usr/libexec/webkit2gtk-4.1/WebKitNetworkProcess \
@@ -143,10 +141,7 @@ jobs:
           exec "$HERE/usr/bin/timetable" "$@"
           EOF
           chmod +x "$APP/AppRun" "$APP/usr/bin/timetable"
-          curl -fsSL --retry 3 -o /tmp/appimagetool.AppImage https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage
-          chmod +x /tmp/appimagetool.AppImage
-          mkdir -p /tmp/ai_extract && ( cd /tmp/ai_extract && /tmp/appimagetool.AppImage --appimage-extract >/dev/null 2>&1 ) || { echo "APPIMAGETOOL EXTRACT FAILED"; exit 1; }
-          /tmp/ai_extract/squashfs-root/AppRun "$APP" build/timetable-x86_64.AppImage || { echo "APPIMAGETOOL RUN FAILED"; exit 1; }
+          "$PWD/tools/appimagetool/AppRun" "$APP" build/timetable-x86_64.AppImage || { echo "APPIMAGETOOL RUN FAILED"; exit 1; }
           ls -lh build/timetable-x86_64.AppImage
       - name: Verify AppImage on Fedora 40 (reproduces user's environment)
         run: |
