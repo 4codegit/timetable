@@ -109,9 +109,9 @@ jobs:
           cp build/appicon.png "$APP/usr/share/icons/hicolor/512x512/apps/timetable.png"
           cp build/appicon.png "$APP/timetable.png"
           # linuxdeploy (bundles all NEEDED libs) + GTK plugin (schemas/immodules/pixbuf).
-          # The GTK plugin is distributed as a bash script, not an AppImage release.
+          # The GTK plugin is vendored in scripts/ (upstream ships it only as a raw script).
           wget -q https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage -O /tmp/linuxdeploy
-          wget -q https://raw.githubusercontent.com/linuxdeploy/linuxdeploy-plugin-gtk/master/linuxdeploy-plugin-gtk.sh -O /tmp/linuxdeploy-plugin-gtk
+          cp scripts/linuxdeploy-plugin-gtk.sh /tmp/linuxdeploy-plugin-gtk
           chmod +x /tmp/linuxdeploy /tmp/linuxdeploy-plugin-gtk
           export PATH=/tmp:$PATH
           export LINUXDEPLOY=/tmp/linuxdeploy
