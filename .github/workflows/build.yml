@@ -97,8 +97,10 @@ jobs:
           ldd build/bin/timetable | grep -qi 'webkit2gtk-4.1' || { echo "ERROR: binary not linked against webkit2gtk-4.1 (Fedora 40+ requires 4.1)"; exit 1; }
       - name: Build self-contained AppImage (linuxdeploy bundles all deps)
         run: |
-          export PATH=$PATH:$(go env GOPATH)/bin
-          APP=build/AppDir
+          set +e
+          {
+            export PATH=$PATH:$(go env GOPATH)/bin
+            APP=build/AppDir
           rm -rf "$APP"
           mkdir -p "$APP/usr/bin" "$APP/usr/lib" "$APP/usr/libexec/webkit2gtk-4.1" \
                    "$APP/usr/share/applications" "$APP/usr/share/icons/hicolor/512x512/apps"
@@ -117,7 +119,8 @@ jobs:
           export LINUXDEPLOY="$PWD/tools/linuxdeploy/AppRun"
           export DEPLOY_GTK_VERSION=3
           export LD_LIBRARY_PATH="$APP/usr/lib:${LD_LIBRARY_PATH:-}"
-          "$LINUXDEPLOY" --appdir "$APP" --executable "$APP/usr/bin/timetable" --plugin gtk > /tmp/ld.log 2>&1 || { echo "LINUXDEPLOY RUN FAILED"; grep -iE "error|fail|could not|not found" /tmp/ld.log | tail -20 | sed 's/^/::error::/'; exit 1; }
+          "$LINUXDEPLOY" --appdir "$APP" --executable "$APP/usr/bin/timetable" --plugin gtk
+          echo "linuxdeploy rc=$?"
           # Bundle WebKit helper processes (WebProcess/NetworkProcess/GPUProcess) so the UI renders fully offline
           for f in \
             /usr/libexec/webkit2gtk-4.1/WebKitNetworkProcess \
@@ -141,8 +144,17 @@ jobs:
           exec "$HERE/usr/bin/timetable" "$@"
           EOF
           chmod +x "$APP/AppRun" "$APP/usr/bin/timetable"
-          "$PWD/tools/appimagetool/AppRun" "$APP" build/timetable-x86_64.AppImage > /tmp/ai.log 2>&1 || { echo "APPIMAGETOOL RUN FAILED"; grep -iE "error|fail|could not|not found" /tmp/ai.log | tail -20 | sed 's/^/::error::/'; exit 1; }
+          "$PWD/tools/appimagetool/AppRun" "$APP" build/timetable-x86_64.AppImage
+          echo "appimagetool rc=$?"
           ls -lh build/timetable-x86_64.AppImage
+          } > /tmp/step.log 2>&1
+          SRC=$?
+          if [ "$SRC" -ne 0 ]; then
+            echo "STEP FAILED rc=$SRC"
+            echo "===== STEP LOG TAIL ====="
+            tail -30 /tmp/step.log | cut -c1-220 | sed 's/^/::error::/'
+          fi
+          exit $SRC
       - name: Verify AppImage on Fedora 40 (reproduces user's environment)
         run: |
           AI="$PWD/build/timetable-x86_64.AppImage"
