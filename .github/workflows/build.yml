@@ -152,7 +152,7 @@ jobs:
           if [ "$SRC" -ne 0 ]; then
             echo "STEP FAILED rc=$SRC"
             echo "===== STEP LOG TAIL ====="
-            tail -30 /tmp/step.log | cut -c1-220 | sed 's/^/::error::/'
+            { grep -iE "error:|ERROR|Segmentation|fault|core dumped|patchelf|cannot open|No such|Could not" /tmp/step.log | tail -4; tail -6 /tmp/step.log; } | cut -c1-200 | sed 's/^/::error::/'
           fi
           exit $SRC
       - name: Verify AppImage on Fedora 40 (reproduces user's environment)
