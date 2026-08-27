@@ -79,7 +79,7 @@ jobs:
       - name: Install WebView build deps
         run: |
           sudo apt-get update
-          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev librsvg2-dev pkg-config build-essential wget
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev librsvg2-dev pkg-config build-essential wget dpkg-dev libglib2.0-bin
       - name: Install Wails CLI
         run: go install github.com/wailsapp/wails/v2/cmd/wails@latest
       - name: Build OR-Tools C++ binding
@@ -108,16 +108,19 @@ jobs:
           cp build/linux/timetable.desktop "$APP/timetable.desktop"
           cp build/appicon.png "$APP/usr/share/icons/hicolor/512x512/apps/timetable.png"
           cp build/appicon.png "$APP/timetable.png"
-          # linuxdeploy + gtk plugin: recursively bundle GTK3, WebKit2GTK-4.1, GLib, Pango, Cairo, libsoup, ...
+          # linuxdeploy (bundles all NEEDED libs) + GTK plugin (schemas/immodules/pixbuf).
+          # The GTK plugin is distributed as a bash script, not an AppImage release.
           wget -q https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage -O /tmp/linuxdeploy
-          wget -q https://github.com/linuxdeploy/linuxdeploy-plugin-gtk/releases/download/continuous/linuxdeploy-plugin-gtk-x86_64.AppImage -O /tmp/linuxdeploy-plugin-gtk
+          wget -q https://raw.githubusercontent.com/linuxdeploy/linuxdeploy-plugin-gtk/master/linuxdeploy-plugin-gtk.sh -O /tmp/linuxdeploy-plugin-gtk
           chmod +x /tmp/linuxdeploy /tmp/linuxdeploy-plugin-gtk
           export PATH=/tmp:$PATH
+          export LINUXDEPLOY=/tmp/linuxdeploy
+          export DEPLOY_GTK_VERSION=3
           export APPIMAGE_EXTRACT_AND_RUN=1
           /tmp/linuxdeploy --appdir "$APP" \
             --executable "$APP/usr/bin/timetable" \
             --plugin gtk
-          # Bundle WebKit helper processes (WebProcess/NetworkProcess) so the UI renders fully offline
+          # Bundle WebKit helper processes (WebProcess/NetworkProcess/GPUProcess) so the UI renders fully offline
           for f in \
             /usr/libexec/webkit2gtk-4.1/WebKitNetworkProcess \
             /usr/libexec/webkit2gtk-4.1/WebKitWebProcess \
@@ -127,17 +130,16 @@ jobs:
             /usr/lib/x86_64-linux-gnu/webkit2gtk-4.1/WebKitGPUProcess; do
             [ -f "$f" ] && cp -L "$f" "$APP/usr/libexec/webkit2gtk-4.1/" && echo "bundled $f"
           done
-          # Custom AppRun: point WebKit at bundled helpers + bundled libs
+          # Custom AppRun: source linuxdeploy's gtk hook, then point WebKit at bundled helpers + libs
           cat > "$APP/AppRun" <<'EOF'
           #!/bin/sh
           HERE="$(dirname "$(readlink -f "$0")")"
+          export APPDIR="$HERE"
+          for h in "$HERE"/apprun-hooks/*.sh; do
+            [ -f "$h" ] && . "$h"
+          done
           export LD_LIBRARY_PATH="$HERE/usr/lib:$LD_LIBRARY_PATH"
           export WEBKIT_EXEC_PATH="$HERE/usr/libexec/webkit2gtk-4.1"
-          export GSETTINGS_SCHEMA_DIR="$HERE/usr/share/glib-2.0/schemas"
-          export GTK_PATH="$HERE/usr/lib/gtk-3.0"
-          export GTK_IM_MODULE_FILE="$HERE/usr/lib/immodules/immodules.cache"
-          export GDK_PIXBUF_MODULEDIR="$HERE/usr/lib/gdk-pixbuf-2.0/2.10.0/loaders"
-          export GDK_PIXBUF_MODULE_FILE="$HERE/usr/lib/gdk-pixbuf-2.0/2.10.0/loaders.cache"
           exec "$HERE/usr/bin/timetable" "$@"
           EOF
           chmod +x "$APP/AppRun" "$APP/usr/bin/timetable"
