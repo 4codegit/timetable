@@ -217,20 +217,23 @@ jobs:
         run: |
           AI="$PWD/build/timetable-x86_64.AppImage"
           chmod +x "$AI"
-          docker run --rm -v "$AI":/app.AppImage:Z fedora:40 bash -c '
-            set -e
-            dnf install -y --setopt=install_weak_deps=False --setopt=tsflags=nodocs xorg-x11-server-Xvfb mesa-dri-drivers libwayland-client libxkbcommon 2>&1 | tail -2
+          mkdir -p "$PWD/ci-debug"
+          # The AppImage is self-contained (bundles GTK/WebKit/Mesa/Wayland), so the verify env only needs
+          # an X display. Copy the app log out so a follow-up step can publish it for diagnosis.
+          docker run --rm -v "$AI":/app.AppImage:Z -v "$PWD/ci-debug":/dbg:Z fedora:40 bash -c '
+            dnf install -y -q --setopt=install_weak_deps=False --setopt=tsflags=nodocs xorg-x11-server-Xvfb 2>&1 | tail -2
             xvfb-run -a /app.AppImage --appimage-extract-and-run >/tmp/app.log 2>&1 &
             PID=$!
-            sleep 12
+            sleep 15
+            cp /tmp/app.log /dbg/app.log
             if kill -0 $PID 2>/dev/null; then
               echo "APP STARTED OK on Fedora 40"
               if grep -qi "EGL_BAD_PARAMETER\|Could not create default EGL display\|Aborting" /tmp/app.log; then
-                echo "EGL RENDERING ERROR DETECTED:"; grep -i "egl\|abort" /tmp/app.log | head; exit 1
+                echo "EGL RENDERING ERROR DETECTED"; exit 1
               fi
               kill $PID
             else
-              echo "LAUNCH FAILED on Fedora 40:"; tail -25 /tmp/app.log; exit 1
+              echo "LAUNCH FAILED on Fedora 40"; exit 1
             fi
             wait $PID 2>/dev/null || true
           '
@@ -238,6 +241,13 @@ jobs:
         with:
           name: timetable-linux
           path: build/timetable-x86_64.AppImage
+      - name: Publish verify debug log
+        if: failure()
+        run: |
+          git config user.email "ci@ci.local"; git config user.name "CI"
+          git add ci-debug || true
+          git commit -m "ci-debug: verify log ${{ github.ref_name }}" || echo "nothing to commit"
+          git push origin HEAD:ci-debug || echo "push-failed"
 
   release:
     name: GitHub Release
