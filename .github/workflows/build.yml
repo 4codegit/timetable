@@ -79,7 +79,7 @@ jobs:
       - name: Install WebView build deps
         run: |
           sudo apt-get update
-          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev librsvg2-dev pkg-config build-essential wget dpkg-dev libglib2.0-bin
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev librsvg2-dev pkg-config build-essential wget dpkg-dev libglib2.0-bin file patchelf
       - name: Install Wails CLI
         run: go install github.com/wailsapp/wails/v2/cmd/wails@latest
       - name: Build OR-Tools C++ binding
@@ -108,18 +108,18 @@ jobs:
           cp build/linux/timetable.desktop "$APP/timetable.desktop"
           cp build/appicon.png "$APP/usr/share/icons/hicolor/512x512/apps/timetable.png"
           cp build/appicon.png "$APP/timetable.png"
-          # linuxdeploy (bundles all NEEDED libs) + GTK plugin (schemas/immodules/pixbuf).
-          # The GTK plugin is vendored in scripts/ (upstream ships it only as a raw script).
-          wget -q https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage -O /tmp/linuxdeploy
+          # Download linuxdeploy + appimagetool as AppImages, then extract them and run the
+          # extracted binaries directly (no FUSE / AppImage runtime needed on the runner).
+          curl -fsSL --retry 3 -o /tmp/linuxdeploy.AppImage https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
           cp scripts/linuxdeploy-plugin-gtk.sh /tmp/linuxdeploy-plugin-gtk
-          chmod +x /tmp/linuxdeploy /tmp/linuxdeploy-plugin-gtk
+          chmod +x /tmp/linuxdeploy.AppImage /tmp/linuxdeploy-plugin-gtk
           export PATH=/tmp:$PATH
-          export LINUXDEPLOY=/tmp/linuxdeploy
+          mkdir -p /tmp/ld_extract && ( cd /tmp/ld_extract && /tmp/linuxdeploy.AppImage --appimage-extract >/dev/null 2>&1 ) || { echo "LINUXDEPLOY EXTRACT FAILED"; exit 1; }
+          LINUXDEPLOY_BIN=/tmp/ld_extract/squashfs-root/AppRun
+          export LINUXDEPLOY="$LINUXDEPLOY_BIN"
           export DEPLOY_GTK_VERSION=3
-          export APPIMAGE_EXTRACT_AND_RUN=1
-          /tmp/linuxdeploy --appdir "$APP" \
-            --executable "$APP/usr/bin/timetable" \
-            --plugin gtk
+          export LD_LIBRARY_PATH="$APP/usr/lib:${LD_LIBRARY_PATH:-}"
+          "$LINUXDEPLOY_BIN" --appdir "$APP" --executable "$APP/usr/bin/timetable" --plugin gtk || { echo "LINUXDEPLOY RUN FAILED"; exit 1; }
           # Bundle WebKit helper processes (WebProcess/NetworkProcess/GPUProcess) so the UI renders fully offline
           for f in \
             /usr/libexec/webkit2gtk-4.1/WebKitNetworkProcess \
@@ -143,9 +143,10 @@ jobs:
           exec "$HERE/usr/bin/timetable" "$@"
           EOF
           chmod +x "$APP/AppRun" "$APP/usr/bin/timetable"
-          wget -q https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage -O /tmp/appimagetool
-          chmod +x /tmp/appimagetool
-          /tmp/appimagetool "$APP" build/timetable-x86_64.AppImage
+          curl -fsSL --retry 3 -o /tmp/appimagetool.AppImage https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x /tmp/appimagetool.AppImage
+          mkdir -p /tmp/ai_extract && ( cd /tmp/ai_extract && /tmp/appimagetool.AppImage --appimage-extract >/dev/null 2>&1 ) || { echo "APPIMAGETOOL EXTRACT FAILED"; exit 1; }
+          /tmp/ai_extract/squashfs-root/AppRun "$APP" build/timetable-x86_64.AppImage || { echo "APPIMAGETOOL RUN FAILED"; exit 1; }
           ls -lh build/timetable-x86_64.AppImage
       - name: Verify AppImage on Fedora 40 (reproduces user's environment)
         run: |
