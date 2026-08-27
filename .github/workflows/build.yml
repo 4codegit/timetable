@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: write
+  issues: write
 
 jobs:
   build-windows:
@@ -243,11 +244,18 @@ jobs:
           path: build/timetable-x86_64.AppImage
       - name: Publish verify debug log
         if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          git config user.email "ci@ci.local"; git config user.name "CI"
-          git add ci-debug || true
-          git commit -m "ci-debug: verify log ${{ github.ref_name }}" || echo "nothing to commit"
-          git push origin HEAD:ci-debug || echo "push-failed"
+          LOG=ci-debug/app.log
+          if [ -f "$LOG" ]; then
+            BODY=$(tail -c 8000 "$LOG" | python3 -c 'import sys,json; print(json.dumps(sys.stdin.read()))')
+          else
+            BODY="NO LOG CAPTURED"
+          fi
+          curl -s -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            https://api.github.com/repos/4codegit/timetable/issues \
+            -d "{\"title\":\"CI verify debug ${{ github.ref_name }}\",\"body\":$BODY}" || echo "issue-create-failed"
 
   release:
     name: GitHub Release
