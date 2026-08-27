@@ -79,7 +79,7 @@ jobs:
       - name: Install WebView build deps
         run: |
           sudo apt-get update
-          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev librsvg2-dev pkg-config build-essential wget dpkg-dev libglib2.0-bin file patchelf
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev librsvg2-dev pkg-config build-essential wget dpkg-dev libglib2.0-bin file patchelf binutils python3
       - name: Install Wails CLI
         run: go install github.com/wailsapp/wails/v2/cmd/wails@latest
       - name: Build OR-Tools C++ binding
@@ -97,12 +97,9 @@ jobs:
           ldd build/bin/timetable | grep -qi 'webkit2gtk-4.1' || { echo "ERROR: binary not linked against webkit2gtk-4.1 (Fedora 40+ requires 4.1)"; exit 1; }
       - name: Build self-contained AppImage (linuxdeploy bundles all deps)
         run: |
-          set +e
-          {
-            export PATH=$PATH:$(go env GOPATH)/bin
-            APP=build/AppDir
+          APP=build/AppDir
           rm -rf "$APP"
-          mkdir -p "$APP/usr/bin" "$APP/usr/lib" "$APP/usr/libexec/webkit2gtk-4.1" \
+          mkdir -p "$APP/usr/bin" "$APP/usr/lib" "$APP/usr/lib/webkit2gtk-4.1/injected-bundle" \
                    "$APP/usr/share/applications" "$APP/usr/share/icons/hicolor/512x512/apps"
           cp build/bin/timetable "$APP/usr/bin/timetable"
           cp -L build/bin/libortools.so* "$APP/usr/lib/"
@@ -120,18 +117,63 @@ jobs:
           export DEPLOY_GTK_VERSION=3
           export LD_LIBRARY_PATH="$APP/usr/lib:${LD_LIBRARY_PATH:-}"
           "$LINUXDEPLOY" --appdir "$APP" --executable "$APP/usr/bin/timetable" --plugin gtk
-          echo "linuxdeploy rc=$?"
-          # Bundle WebKit helper processes (WebProcess/NetworkProcess/GPUProcess) so the UI renders fully offline
-          for f in \
-            /usr/libexec/webkit2gtk-4.1/WebKitNetworkProcess \
-            /usr/libexec/webkit2gtk-4.1/WebKitWebProcess \
-            /usr/libexec/webkit2gtk-4.1/WebKitGPUProcess \
-            /usr/lib/x86_64-linux-gnu/webkit2gtk-4.1/WebKitNetworkProcess \
-            /usr/lib/x86_64-linux-gnu/webkit2gtk-4.1/WebKitWebProcess \
-            /usr/lib/x86_64-linux-gnu/webkit2gtk-4.1/WebKitGPUProcess; do
-            [ -f "$f" ] && cp -L "$f" "$APP/usr/libexec/webkit2gtk-4.1/" && echo "bundled $f"
+          # GDK/WebKit load the Wayland backend via dlopen, so linuxdeploy's static NEEDED scan
+          # misses libwayland-client (and friends). Bundle them explicitly.
+          for lib in /usr/lib/x86_64-linux-gnu/libwayland-client.so* \
+                     /usr/lib/x86_64-linux-gnu/libwayland-cursor.so* \
+                     /usr/lib/x86_64-linux-gnu/libxkbcommon.so* \
+                     /usr/lib/x86_64-linux-gnu/libwayland-egl.so*; do
+            for f in $lib; do
+              [ -e "$f" ] && cp -L "$f" "$APP/usr/lib/" && echo "added $(basename "$f")"
+            done
           done
-          # Custom AppRun: source linuxdeploy's gtk hook, then point WebKit at bundled helpers + libs
+          # WebKit helper processes (Network/Web/GPU) + injected bundle
+          for f in /usr/libexec/webkit2gtk-4.1/WebKitNetworkProcess /usr/libexec/webkit2gtk-4.1/WebKitWebProcess /usr/libexec/webkit2gtk-4.1/WebKitGPUProcess /usr/lib/x86_64-linux-gnu/webkit2gtk-4.1/WebKitNetworkProcess /usr/lib/x86_64-linux-gnu/webkit2gtk-4.1/WebKitWebProcess /usr/lib/x86_64-linux-gnu/webkit2gtk-4.1/WebKitGPUProcess; do
+            [ -f "$f" ] && cp -L "$f" "$APP/usr/lib/webkit2gtk-4.1/" && echo "bundled $f"
+          done
+          for f in /usr/lib/x86_64-linux-gnu/webkit2gtk-4.1/injected-bundle/libwebkit2gtkinjectedbundle.so /usr/lib64/webkit2gtk-4.1/injected-bundle/libwebkit2gtkinjectedbundle.so /usr/libexec/webkit2gtk-4.1/injected-bundle/libwebkit2gtkinjectedbundle.so; do
+            [ -f "$f" ] && cp -L "$f" "$APP/usr/lib/webkit2gtk-4.1/injected-bundle/" && cp -L "$f" "$APP/usr/lib/webkit2gtk-4.1/" && echo "bundled injected bundle"
+          done
+          # Close the full NEEDED library closure so nothing is missing at runtime
+          # (linuxdeploy's static scan misses transitive deps such as libfribidi).
+          close_libs() {
+            local changed=1 r=0 soname found
+            while [ $changed -eq 1 ] && [ $r -lt 15 ]; do
+              changed=0; r=$((r+1))
+              for elf in $(find "$APP" -type f \( -name '*.so*' -o -name timetable \)); do
+                for soname in $(readelf -d "$elf" 2>/dev/null | awk '/NEEDED/{print $5}' | tr -d '[]'); do
+                  case "$soname" in
+                    libc.so*|ld-linux*|libm.so*|libpthread.so*|librt.so*|libdl.so*|libutil.so*|libresolv.so*|libnsl.so*|libLLVM*) continue;;
+                    # Let the host's Mesa provide the GL/EGL/GBM stack (with its DRI drivers)
+                    libgbm.so*|libEGL.so*|libGL.so*|libGLESv2.so*|libdrm.so*|libvulkan.so*|libglapi.so*|libxshmfence.so*|libOSMesa.so*) continue;;
+                  esac
+                  if [ ! -e "$APP/usr/lib/$soname" ]; then
+                    found=$(ls /usr/lib/x86_64-linux-gnu/$soname /usr/lib/$soname /lib/x86_64-linux-gnu/$soname 2>/dev/null | head -1) || true
+                    if [ -n "$found" ]; then cp -L "$found" "$APP/usr/lib/" && echo "closure added $soname" && changed=1; fi
+                  fi
+                done
+              done
+            done
+          }
+          close_libs
+          # WebKit hardcodes its helper/injected-bundle path at build time (e.g.
+          # /usr/lib/x86_64-linux-gnu/webkit2gtk-4.1) which does not exist on Fedora, so the
+          # Network/Web/GPU child processes fail to spawn. Patch the embedded absolute path to a
+          # fixed /tmp location and symlink it at runtime to the bundled helpers.
+          python3 - <<'PY'
+          import re
+          p="build/AppDir/usr/lib/libwebkit2gtk-4.1.so.0"
+          b=open(p,'rb').read()
+          m=re.search(b'/usr/[^\x00]*?/webkit2gtk-4\\.1', b)
+          assert m, "embedded webkit exec path not found in libwebkit"
+          old=m.group(0)
+          print("found embedded webkit path:", old.decode(), "len", len(old))
+          new=b'/tmp/tw/webkit2gtk-4.1'
+          assert len(new)<=len(old), (len(new), len(old))
+          new_padded=new+b'\x00'*(len(old)-len(new))
+          open(p,'wb').write(b.replace(old,new_padded))
+          print("patched ->", new.decode())
+          PY
           cat > "$APP/AppRun" <<'EOF'
           #!/bin/sh
           HERE="$(dirname "$(readlink -f "$0")")"
@@ -140,31 +182,26 @@ jobs:
             [ -f "$h" ] && . "$h"
           done
           export LD_LIBRARY_PATH="$HERE/usr/lib:$LD_LIBRARY_PATH"
-          export WEBKIT_EXEC_PATH="$HERE/usr/libexec/webkit2gtk-4.1"
+          export WEBKIT_EXEC_PATH="$HERE/usr/lib/webkit2gtk-4.1"
+          # Redirect WebKit's hardcoded helper/injected-bundle path (patched in libwebkit) to our bundled copy
+          mkdir -p /tmp/tw
+          ln -sfn "$HERE/usr/lib/webkit2gtk-4.1" /tmp/tw/webkit2gtk-4.1
           exec "$HERE/usr/bin/timetable" "$@"
           EOF
           chmod +x "$APP/AppRun" "$APP/usr/bin/timetable"
           "$PWD/tools/appimagetool/AppRun" "$APP" build/timetable-x86_64.AppImage
-          echo "appimagetool rc=$?"
           ls -lh build/timetable-x86_64.AppImage
-          } > /tmp/step.log 2>&1
-          SRC=$?
-          if [ "$SRC" -ne 0 ]; then
-            echo "STEP FAILED rc=$SRC"
-            echo "===== STEP LOG TAIL ====="
-            { grep -iE "error:|ERROR|Segmentation|fault|core dumped|patchelf|cannot open|No such|Could not" /tmp/step.log | tail -4; tail -6 /tmp/step.log; } | cut -c1-200 | sed 's/^/::error::/'
-          fi
-          exit $SRC
       - name: Verify AppImage on Fedora 40 (reproduces user's environment)
         run: |
           AI="$PWD/build/timetable-x86_64.AppImage"
           chmod +x "$AI"
           docker run --rm -v "$AI":/app.AppImage:Z fedora:40 bash -c '
             set -e
-            dnf install -y --setopt=install_weak_deps=False --setopt=tsflags=nodocs xorg-x11-server-Xvfb 2>&1 | tail -2
+            dnf install -y --setopt=install_weak_deps=False --setopt=tsflags=nodocs xorg-x11-server-Xvfb mesa-dri-drivers mesa-libgbm libglvnd-egl mesa-libEGL 2>&1 | tail -2
+            export LIBGL_ALWAYS_SOFTWARE=1
             xvfb-run -a /app.AppImage --appimage-extract-and-run >/tmp/app.log 2>&1 &
             PID=$!
-            sleep 10
+            sleep 12
             if kill -0 $PID 2>/dev/null; then echo "APP STARTED OK on Fedora 40"; kill $PID; else echo "LAUNCH FAILED on Fedora 40:"; tail -25 /tmp/app.log; exit 1; fi
             wait $PID 2>/dev/null || true
           '
