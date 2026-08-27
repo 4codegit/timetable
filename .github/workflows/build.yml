@@ -117,16 +117,10 @@ jobs:
           export DEPLOY_GTK_VERSION=3
           export LD_LIBRARY_PATH="$APP/usr/lib:${LD_LIBRARY_PATH:-}"
           "$LINUXDEPLOY" --appdir "$APP" --executable "$APP/usr/bin/timetable" --plugin gtk
-          # GDK/WebKit load the Wayland backend via dlopen, so linuxdeploy's static NEEDED scan
-          # misses libwayland-client (and friends). Bundle them explicitly.
-          for lib in /usr/lib/x86_64-linux-gnu/libwayland-client.so* \
-                     /usr/lib/x86_64-linux-gnu/libwayland-cursor.so* \
-                     /usr/lib/x86_64-linux-gnu/libxkbcommon.so* \
-                     /usr/lib/x86_64-linux-gnu/libwayland-egl.so*; do
-            for f in $lib; do
-              [ -e "$f" ] && cp -L "$f" "$APP/usr/lib/" && echo "added $(basename "$f")"
-            done
-          done
+          # NOTE: We deliberately do NOT bundle libwayland-* or libxkbcommon. Bundling the build env's
+          # libwayland-client.so.0 shadows the host copy and breaks host Mesa EGL init, causing
+          # "Could not create default EGL display: EGL_BAD_PARAMETER" (white screen). The host provides
+          # these common system libraries (they must match the host's own Mesa/EGL stack).
           # WebKit helper processes (Network/Web/GPU) + injected bundle
           for f in /usr/libexec/webkit2gtk-4.1/WebKitNetworkProcess /usr/libexec/webkit2gtk-4.1/WebKitWebProcess /usr/libexec/webkit2gtk-4.1/WebKitGPUProcess /usr/lib/x86_64-linux-gnu/webkit2gtk-4.1/WebKitNetworkProcess /usr/lib/x86_64-linux-gnu/webkit2gtk-4.1/WebKitWebProcess /usr/lib/x86_64-linux-gnu/webkit2gtk-4.1/WebKitGPUProcess; do
             [ -f "$f" ] && cp -L "$f" "$APP/usr/lib/webkit2gtk-4.1/" && echo "bundled $f"
@@ -144,6 +138,10 @@ jobs:
                 for soname in $(readelf -d "$elf" 2>/dev/null | awk '/NEEDED/{print $5}' | tr -d '[]'); do
                   case "$soname" in
                     libc.so*|ld-linux*|libm.so*|libpthread.so*|librt.so*|libdl.so*|libutil.so*|libresolv.so*|libnsl.so*|libLLVM*) continue;;
+                    # Let the host provide the common system libraries (Wayland, XKB, Mesa GL/EGL/GBM).
+                    # Bundling them from the build env shadows the host copies and breaks host Mesa EGL init
+                    # (e.g. "Could not create default EGL display: EGL_BAD_PARAMETER").
+                    libwayland-client.so*|libwayland-cursor.so*|libwayland-egl.so*|libwayland-server.so*|libxkbcommon.so*) continue;;
                     # Let the host's Mesa provide the GL/EGL/GBM stack (with its DRI drivers)
                     libgbm.so*|libEGL.so*|libGL.so*|libGLESv2.so*|libdrm.so*|libvulkan.so*|libglapi.so*|libxshmfence.so*|libOSMesa.so*) continue;;
                   esac
@@ -156,6 +154,11 @@ jobs:
             done
           }
           close_libs
+          # Remove any bundled Wayland/XKB libraries so the HOST's own copies are used. Bundling the build
+          # env's libwayland-client.so.0 (and friends) shadows the host copy, breaking host Mesa EGL init
+          # and causing "Could not create default EGL display: EGL_BAD_PARAMETER" (white screen). The host
+          # provides these and they must match the host's own Mesa/EGL stack.
+          rm -f "$APP/usr/lib/libwayland-"*.so* "$APP/usr/lib/libxkbcommon"*.so* 2>/dev/null || true
           # WebKit hardcodes its helper/injected-bundle path at build time (e.g.
           # /usr/lib/x86_64-linux-gnu/webkit2gtk-4.1) which does not exist on Fedora, so the
           # Network/Web/GPU child processes fail to spawn. Patch the embedded absolute path to a
@@ -197,12 +200,19 @@ jobs:
           chmod +x "$AI"
           docker run --rm -v "$AI":/app.AppImage:Z fedora:40 bash -c '
             set -e
-            dnf install -y --setopt=install_weak_deps=False --setopt=tsflags=nodocs xorg-x11-server-Xvfb mesa-dri-drivers mesa-libgbm libglvnd-egl mesa-libEGL 2>&1 | tail -2
-            export LIBGL_ALWAYS_SOFTWARE=1
+            dnf install -y --setopt=install_weak_deps=False --setopt=tsflags=nodocs xorg-x11-server-Xvfb mesa-dri-drivers mesa-libgbm libglvnd-egl mesa-libEGL mesa-libwayland libxkbcommon wayland 2>&1 | tail -2
             xvfb-run -a /app.AppImage --appimage-extract-and-run >/tmp/app.log 2>&1 &
             PID=$!
             sleep 12
-            if kill -0 $PID 2>/dev/null; then echo "APP STARTED OK on Fedora 40"; kill $PID; else echo "LAUNCH FAILED on Fedora 40:"; tail -25 /tmp/app.log; exit 1; fi
+            if kill -0 $PID 2>/dev/null; then
+              echo "APP STARTED OK on Fedora 40"
+              if grep -qi "EGL_BAD_PARAMETER\|Could not create default EGL display\|Aborting" /tmp/app.log; then
+                echo "EGL RENDERING ERROR DETECTED:"; grep -i "egl\|abort" /tmp/app.log | head; exit 1
+              fi
+              kill $PID
+            else
+              echo "LAUNCH FAILED on Fedora 40:"; tail -25 /tmp/app.log; exit 1
+            fi
             wait $PID 2>/dev/null || true
           '
       - uses: actions/upload-artifact@v4
