@@ -73,6 +73,11 @@ func ortoolsSolve(in SolveInput, parallelism int, timeout time.Duration) (Result
 		lreq[i] = C.int(assignType(rt))
 	}
 
+	// Nothing to schedule when there are no lessons.
+	if nl == 0 {
+		return Result{Entries: nil, Placed: 0, Total: 0, Violations: 0}, true
+	}
+
 	nr := len(in.Rooms)
 	roomIDs := make([]C.int, nr)
 	roomTypes := make([]C.int, nr)
@@ -80,9 +85,15 @@ func ortoolsSolve(in SolveInput, parallelism int, timeout time.Duration) (Result
 		roomIDs[i] = C.int(r.ID)
 		roomTypes[i] = C.int(assignType(r.RoomType))
 	}
+	// CGO needs a valid pointer even when the count passed to C is 0.
+	if nr == 0 {
+		roomIDs = []C.int{0}
+		roomTypes = []C.int{0}
+	}
 
 	// constraints
 	cts := make([]C.CConstraint, len(in.Constraints))
+	ctCount := len(in.Constraints)
 	for i, c := range in.Constraints {
 		cts[i].ctype = C.int(constraintTypeCode(c.Type))
 		cts[i].entity_type = C.int(entityTypeCode(c.EntityType))
@@ -115,11 +126,15 @@ func ortoolsSolve(in SolveInput, parallelism int, timeout time.Duration) (Result
 		workers = runtime.NumCPU()
 	}
 
+	if ctCount == 0 {
+		cts = []C.CConstraint{{}}
+	}
+
 	res := C.ortools_solve(
 		C.int(nl), &hours[0], &lclass[0], &lteacher[0], &lsubject[0], &lreq[0],
 		C.int(nr), &roomIDs[0], &roomTypes[0],
 		C.int(days), C.int(slots),
-		C.int(len(cts)), &cts[0],
+		C.int(ctCount), &cts[0],
 		C.int(int(timeout.Milliseconds())), C.int(workers),
 	)
 	if res == nil {
