@@ -336,11 +336,11 @@ func (s *Store) ListConstraints(schoolID int) ([]domain.Constraint, error) {
 	for rows.Next() {
 		var c domain.Constraint
 		var dow, ts, te sql.NullInt32
-		var hard int
+		var hard sql.NullBool
 		if err := rows.Scan(&c.ID, &c.SchoolID, &c.Type, &c.EntityType, &c.EntityID, &dow, &ts, &te, &c.Weight, &hard, &c.ParamsJSON); err != nil {
 			return nil, err
 		}
-		c.IsHard = hard != 0
+		c.IsHard = hard.Bool
 		if dow.Valid {
 			v := int(dow.Int32)
 			c.DayOfWeek = &v
