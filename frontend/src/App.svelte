@@ -179,20 +179,30 @@
 
 	async function generate() {
 		await pushHistory();
+		if (!lessons.length) { flash("Нет уроков в учебном плане — добавьте их на вкладке «Уроки»."); history.pop(); return; }
 		const occurrences = lessons.reduce((a, l) => a + (l.hours_per_week || 0), 0);
 		if (!usePrecise && occurrences > 200) {
 			usePrecise = true;
-			flash("Крупная школа: включён точный CP-SAT (OR-Tools). Для 35+ классов нужна сборка с OR-Tools.");
+			flash("Крупная школа: включён точный CP-SAT (OR-Tools).");
 		}
-		genResult = (usePrecise ? await GeneratePrecise(activeSchoolID, days, slots) : await Generate(activeSchoolID, days, slots)) || {};
-		await reloadSchedule();
-		flash(`Размещено ${genResult.placed}/${genResult.total}, нарушений (мягких): ${genResult.violations}`);
+		try {
+			genResult = (usePrecise ? await GeneratePrecise(activeSchoolID, days, slots) : await Generate(activeSchoolID, days, slots)) || {};
+			await reloadSchedule();
+			flash(`Размещено ${genResult.placed}/${genResult.total}, нарушений (мягких): ${genResult.violations}`);
+		} catch (e) {
+			flash("Ошибка генерации: " + (e && e.message ? e.message : e));
+		}
 	}
 	async function generatePrecise() {
 		await pushHistory();
-		genResult = await GeneratePrecise(activeSchoolID, days, slots);
-		await reloadSchedule();
-		flash(`CP-SAT: размещено ${genResult.placed}/${genResult.total}`);
+		if (!lessons.length) { flash("Нет уроков в учебном плане — добавьте их на вкладке «Уроки»."); history.pop(); return; }
+		try {
+			genResult = await GeneratePrecise(activeSchoolID, days, slots);
+			await reloadSchedule();
+			flash(`CP-SAT: размещено ${genResult.placed}/${genResult.total}`);
+		} catch (e) {
+			flash("Ошибка генерации: " + (e && e.message ? e.message : e));
+		}
 	}
 	async function applyMove(id, kind, rowId, day, slot) {
 		const src = schedule.find(en => en.id === id);
