@@ -18,7 +18,7 @@ type Store struct {
 
 // New opens (or creates) the SQLite database and runs migrations.
 func New(path string) (*Store, error) {
-	d, err := sql.Open("sqlite3", path)
+	d, err := sql.Open("sqlite3", path+"?_foreign_keys=on")
 	if err != nil {
 		return nil, err
 	}
@@ -310,6 +310,36 @@ func (s *Store) ListLessons(schoolID int) ([]domain.Lesson, error) {
 
 func (s *Store) DeleteLesson(id int) error {
 	_, err := s.DB.Exec(`DELETE FROM lessons WHERE id=?`, id)
+	return err
+}
+
+func (s *Store) DeleteTeacher(id int) error {
+	_, err := s.DB.Exec(`DELETE FROM teachers WHERE id=?`, id)
+	return err
+}
+
+func (s *Store) DeleteSubject(id int) error {
+	_, err := s.DB.Exec(`DELETE FROM subjects WHERE id=?`, id)
+	return err
+}
+
+func (s *Store) DeleteClass(id int) error {
+	_, err := s.DB.Exec(`DELETE FROM classes WHERE id=?`, id)
+	return err
+}
+
+func (s *Store) DeleteRoom(id int) error {
+	_, err := s.DB.Exec(`DELETE FROM rooms WHERE id=?`, id)
+	return err
+}
+
+func (s *Store) DeleteConstraint(id int) error {
+	_, err := s.DB.Exec(`DELETE FROM constraints WHERE id=?`, id)
+	return err
+}
+
+func (s *Store) DeleteScheduleEntry(id int) error {
+	_, err := s.DB.Exec(`DELETE FROM schedule_entries WHERE id=?`, id)
 	return err
 }
 

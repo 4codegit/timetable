@@ -3,9 +3,11 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/csv"
 	"encoding/json"
 	"fmt"
+	"os"
 	"runtime"
 	"strconv"
 	"strings"
@@ -94,6 +96,40 @@ func (a *App) ListLessons(schoolID int) ([]domain.Lesson, error) {
 
 func (a *App) DeleteLesson(id int) error {
 	return a.store.DeleteLesson(id)
+}
+
+func (a *App) DeleteTeacher(id int) error {
+	return a.store.DeleteTeacher(id)
+}
+
+func (a *App) DeleteSubject(id int) error {
+	return a.store.DeleteSubject(id)
+}
+
+func (a *App) DeleteClass(id int) error {
+	return a.store.DeleteClass(id)
+}
+
+func (a *App) DeleteRoom(id int) error {
+	return a.store.DeleteRoom(id)
+}
+
+func (a *App) DeleteConstraint(id int) error {
+	return a.store.DeleteConstraint(id)
+}
+
+func (a *App) DeleteScheduleEntry(id int) error {
+	return a.store.DeleteScheduleEntry(id)
+}
+
+// SaveFile writes a base64-encoded payload (e.g. a generated PDF) to disk at
+// the path chosen by the user via the native Save dialog.
+func (a *App) SaveFile(path string, b64 string) error {
+	data, err := base64.StdEncoding.DecodeString(b64)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, data, 0644)
 }
 
 // ---- Constraints ----

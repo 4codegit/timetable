@@ -30,8 +30,32 @@ export function CreateTeacher(arg1) {
   return window['go']['main']['App']['CreateTeacher'](arg1);
 }
 
+export function DeleteClass(arg1) {
+  return window['go']['main']['App']['DeleteClass'](arg1);
+}
+
+export function DeleteConstraint(arg1) {
+  return window['go']['main']['App']['DeleteConstraint'](arg1);
+}
+
 export function DeleteLesson(arg1) {
   return window['go']['main']['App']['DeleteLesson'](arg1);
+}
+
+export function DeleteRoom(arg1) {
+  return window['go']['main']['App']['DeleteRoom'](arg1);
+}
+
+export function DeleteScheduleEntry(arg1) {
+  return window['go']['main']['App']['DeleteScheduleEntry'](arg1);
+}
+
+export function DeleteSubject(arg1) {
+  return window['go']['main']['App']['DeleteSubject'](arg1);
+}
+
+export function DeleteTeacher(arg1) {
+  return window['go']['main']['App']['DeleteTeacher'](arg1);
 }
 
 export function ExportAll(arg1) {
@@ -104,6 +128,10 @@ export function MoveEntry(arg1, arg2, arg3) {
 
 export function ReplaceSchedule(arg1, arg2) {
   return window['go']['main']['App']['ReplaceSchedule'](arg1, arg2);
+}
+
+export function SaveFile(arg1, arg2) {
+  return window['go']['main']['App']['SaveFile'](arg1, arg2);
 }
 
 export function ScheduleCSV(arg1, arg2, arg3) {

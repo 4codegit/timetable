@@ -18,7 +18,19 @@ export function CreateSubject(arg1:domain.Subject):Promise<domain.Subject>;
 
 export function CreateTeacher(arg1:domain.Teacher):Promise<domain.Teacher>;
 
+export function DeleteClass(arg1:number):Promise<void>;
+
+export function DeleteConstraint(arg1:number):Promise<void>;
+
 export function DeleteLesson(arg1:number):Promise<void>;
+
+export function DeleteRoom(arg1:number):Promise<void>;
+
+export function DeleteScheduleEntry(arg1:number):Promise<void>;
+
+export function DeleteSubject(arg1:number):Promise<void>;
+
+export function DeleteTeacher(arg1:number):Promise<void>;
 
 export function ExportAll(arg1:number):Promise<io.Snapshot>;
 
@@ -55,6 +67,8 @@ export function ListTeachers(arg1:number):Promise<Array<domain.Teacher>>;
 export function MoveEntry(arg1:number,arg2:number,arg3:number):Promise<void>;
 
 export function ReplaceSchedule(arg1:number,arg2:Array<domain.ScheduleEntry>):Promise<void>;
+
+export function SaveFile(arg1:string,arg2:string):Promise<void>;
 
 export function ScheduleCSV(arg1:number,arg2:number,arg3:number):Promise<string>;
 

@@ -4,7 +4,8 @@
 		CreateTeacher, ListTeachers, CreateSubject, ListSubjects,
 		CreateClass, ListClasses, CreateRoom, ListRooms,
 		CreateLesson, ListLessons, DeleteLesson,
-		CreateConstraint, ListConstraints,
+		CreateConstraint, ListConstraints, DeleteConstraint,
+		DeleteTeacher, DeleteSubject, DeleteClass, DeleteRoom, DeleteScheduleEntry, SaveFile,
 		Generate, GeneratePrecise, MoveEntry, ReplaceSchedule, ListSchedule, ExportAll, ImportAll, ScheduleCSV, ExportRefsCSV, ImportRefsCSV, GetSchoolSettings, UpdateSchoolSettings
 	} from "../wailsjs/go/main/App";
 	import { jsPDF } from "jspdf";
@@ -157,6 +158,12 @@
 		await reloadRefs();
 	}
 	async function removeLesson(id) { await DeleteLesson(id); await reloadRefs(); }
+	async function removeTeacher(id) { await DeleteTeacher(id); await reloadRefs(); }
+	async function removeSubject(id) { await DeleteSubject(id); await reloadRefs(); }
+	async function removeClass(id) { await DeleteClass(id); await reloadRefs(); }
+	async function removeRoom(id) { await DeleteRoom(id); await reloadRefs(); }
+	async function removeConstraint(id) { await DeleteConstraint(id); await reloadRefs(); }
+	async function removeEntry(id) { await pushHistory(); await DeleteScheduleEntry(id); await reloadSchedule(); }
 
 	async function generate() {
 		await pushHistory();
@@ -216,7 +223,7 @@
 
 	async function exportJSON() {
 		const snap = await ExportAll(activeSchoolID);
-		download(JSON.stringify(snap, null, 2), "school.json", "application/json");
+		await download(JSON.stringify(snap, null, 2), "school.json", "application/json");
 	}
 	async function importJSON(ev) {
 		const text = await ev.target.files[0].text();
@@ -227,7 +234,7 @@
 	}
 	async function exportCSV() {
 		const csv = await ScheduleCSV(activeSchoolID, days, slots);
-		download(csv, "schedule.csv", "text/csv");
+		await download(csv, "schedule.csv", "text/csv");
 	}
 	function hexToRgb(hex) {
 		const h = String(hex).replace("#", "");
@@ -304,8 +311,19 @@
 				if (lx > pageW - 30) { lx = margin; ly -= 5; }
 			}
 		}
-		const blob = doc.output("blob");
-		download(blob, "Расписание_" + fileSlug(pdfSchoolName()) + "_" + new Date().toISOString().slice(0, 10) + ".pdf", "application/pdf");
+		const base64 = doc.output("base64");
+		const defName = "Расписание_" + fileSlug(pdfSchoolName()) + "_" + new Date().toISOString().slice(0, 10) + ".pdf";
+		let path = "";
+		try {
+			path = await window.runtime.SaveFileDialog({
+				Title: "Сохранить расписание (PDF)",
+				DefaultFilename: defName,
+				Filters: [{ DisplayName: "PDF", Pattern: "*.pdf" }]
+			});
+		} catch (e) { path = ""; }
+		if (!path) return;
+		await SaveFile(path, base64);
+		flash("PDF сохранён: " + path);
 	}
 	function entityRows(kind) {
 		if (kind === "teacher") return teachers.map((t) => ({ id: t.id, label: t.name }));
@@ -407,16 +425,19 @@
 	function escapeHtml(s) {
 		return String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 	}
-	function download(content, filename, type) {
-		const blob = new Blob([content], { type });
-		const url = URL.createObjectURL(blob);
-		const a = document.createElement("a");
-		a.href = url; a.download = filename; a.click();
-		URL.revokeObjectURL(url);
+	async function download(content, filename, type) {
+		let path = "";
+		try {
+			path = await window.runtime.SaveFileDialog({ Title: "Сохранить файл", DefaultFilename: filename, Filters: [] });
+		} catch (e) { path = ""; }
+		if (!path) return;
+		const b64 = btoa(unescape(encodeURIComponent(content)));
+		await SaveFile(path, b64);
+		flash("Сохранено: " + path);
 	}
 	async function downloadRefsCSV(entity) {
 		const csv = await ExportRefsCSV(activeSchoolID, entity);
-		download(csv, entity + ".csv", "text/csv");
+		await download(csv, entity + ".csv", "text/csv");
 	}
 	async function importRefsCSV(entity, e) {
 		const file = e.target.files && e.target.files[0];
@@ -554,7 +575,7 @@
 							<input type="number" bind:value={t.max_hours_per_week} title="Часов/нед" />
 							<button class="primary" on:click={addTeacher}>+</button>
 						</div>
-						<ul class="list">{#each teachers as x}<li>{x.name} <small>({x.short_name})</small> <span class="muted">— {x.max_hours_per_week}ч/нед</span></li>{/each}</ul>
+						<ul class="list">{#each teachers as x}<li>{x.name} <small>({x.short_name})</small> <span class="muted">— {x.max_hours_per_week}ч/нед</span><button class="danger sm" on:click={() => removeTeacher(x.id)}>✕</button></li>{/each}</ul>
 					</section>
 
 					<section class="card">
@@ -571,7 +592,7 @@
 							<input bind:value={s.requires_room_type} placeholder="Тип каб." />
 							<button class="primary" on:click={addSubject}>+</button>
 						</div>
-						<ul class="list">{#each subjects as x}<li>{x.name} <small>({x.short_name})</small></li>{/each}</ul>
+						<ul class="list">{#each subjects as x}<li>{x.name} <small>({x.short_name})</small><button class="danger sm" on:click={() => removeSubject(x.id)}>✕</button></li>{/each}</ul>
 					</section>
 
 					<section class="card">
@@ -589,7 +610,7 @@
 							<select bind:value={c.subgroup_of}><option value={null}>— целый класс —</option>{#each classes as x}<option value={x.id}>{x.name} (подгруппа)</option>{/each}</select>
 							<button class="primary" on:click={addClass}>+</button>
 						</div>
-						<ul class="list">{#each classes as x}<li>{x.name} <span class="muted">— {x.student_count} чел.</span>{x.subgroup_of ? " · подгруппа" : ""}</li>{/each}</ul>
+						<ul class="list">{#each classes as x}<li>{x.name} <span class="muted">— {x.student_count} чел.</span>{x.subgroup_of ? " · подгруппа" : ""}<button class="danger sm" on:click={() => removeClass(x.id)}>✕</button></li>{/each}</ul>
 					</section>
 
 					<section class="card">
@@ -606,7 +627,7 @@
 							<input bind:value={r.room_type} placeholder="Тип" />
 							<button class="primary" on:click={addRoom}>+</button>
 						</div>
-						<ul class="list">{#each rooms as x}<li>{x.name} <span class="muted">— {x.capacity} мест</span></li>{/each}</ul>
+						<ul class="list">{#each rooms as x}<li>{x.name} <span class="muted">— {x.capacity} мест</span><button class="danger sm" on:click={() => removeRoom(x.id)}>✕</button></li>{/each}</ul>
 					</section>
 				</div>
 			{:else if tab === "lessons"}
@@ -672,7 +693,7 @@
 						<label class="chk"><input type="checkbox" bind:checked={con.is_hard} /> жёсткое</label>
 						<button class="primary" on:click={addConstraint}>+ Добавить</button>
 					</div>
-					<ul class="list">{#each constraints as x}<li>{x.type} → {x.entity_type}#{x.entity_id} {x.is_hard ? "жёсткое" : "мягкое"}</li>{/each}</ul>
+					<ul class="list">{#each constraints as x}<li>{x.type} → {x.entity_type}#{x.entity_id} {x.is_hard ? "жёсткое" : "мягкое"}<button class="danger sm" on:click={() => removeConstraint(x.id)}>✕</button></li>{/each}</ul>
 				</section>
 			{:else if tab === "settings"}
 				<section class="card">
@@ -774,7 +795,7 @@
 													draggable={!!cell}
 													on:dragstart={(e) => { if (!cell) return; e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("text/plain", String(cell.id)); }}
 													on:dragover={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = "move"; }}
-													on:drop={(e) => onDrop(e, viewMode, row.id, di, si)}>{cell ? cell.label : ""}</td>{/each}</tr>
+													on:drop={(e) => onDrop(e, viewMode, row.id, di, si)}>{#if cell}{cell.label}<button class="cell-x" title="Удалить" on:click={(e) => { e.stopPropagation(); removeEntry(cell.id); }}>✕</button>{:else}{/if}</td>{/each}</tr>
 											{/each}
 										</tbody>
 									</table>
@@ -903,6 +924,8 @@
 	td.filled { cursor: grab; border-radius: 4px; font-weight: 500; }
 	td.filled:active { cursor: grabbing; }
 	td.filled.conflict { background: #b91c1c !important; color: #fff; }
+	.cell-x { position: absolute; top: 1px; right: 1px; border: none; background: rgba(0,0,0,0.18); color: #fff; width: 16px; height: 16px; line-height: 14px; border-radius: 4px; cursor: pointer; font-size: 10px; padding: 0; }
+	td.filled { position: relative; }
 	.class-block table.compact th, .class-block table.compact td { padding: 1px 3px; font-size: 9px; height: 22px; }
 	.class-block.compact h3 { font-size: 11px; margin: 0 0 4px; }
 
