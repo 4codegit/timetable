@@ -72,4 +72,6 @@ export function SaveFile(arg1:string,arg2:string):Promise<void>;
 
 export function ScheduleCSV(arg1:number,arg2:number,arg3:number):Promise<string>;
 
+export function UpdateLesson(arg1:domain.Lesson):Promise<domain.Lesson>;
+
 export function UpdateSchoolSettings(arg1:number,arg2:string):Promise<void>;

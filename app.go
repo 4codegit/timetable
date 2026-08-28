@@ -98,6 +98,13 @@ func (a *App) DeleteLesson(id int) error {
 	return a.store.DeleteLesson(id)
 }
 
+func (a *App) UpdateLesson(l domain.Lesson) (*domain.Lesson, error) {
+	if err := a.store.UpdateLesson(l); err != nil {
+		return nil, err
+	}
+	return &l, nil
+}
+
 func (a *App) DeleteTeacher(id int) error {
 	return a.store.DeleteTeacher(id)
 }

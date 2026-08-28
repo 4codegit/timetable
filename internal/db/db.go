@@ -313,6 +313,12 @@ func (s *Store) DeleteLesson(id int) error {
 	return err
 }
 
+func (s *Store) UpdateLesson(l domain.Lesson) error {
+	_, err := s.DB.Exec(`UPDATE lessons SET class_id=?, subject_id=?, teacher_id=?, hours_per_week=?, min_gap_days=?, can_split=?, preferred_rooms=? WHERE id=?`,
+		l.ClassID, l.SubjectID, l.TeacherID, l.HoursPerWeek, l.MinGapDays, l.CanSplit, orDefault(l.PreferredRooms, "[]"), l.ID)
+	return err
+}
+
 func (s *Store) DeleteTeacher(id int) error {
 	_, err := s.DB.Exec(`DELETE FROM teachers WHERE id=?`, id)
 	return err

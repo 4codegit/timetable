@@ -3,7 +3,7 @@
 		Greet, CreateSchool, ListSchools,
 		CreateTeacher, ListTeachers, CreateSubject, ListSubjects,
 		CreateClass, ListClasses, CreateRoom, ListRooms,
-		CreateLesson, ListLessons, DeleteLesson,
+		CreateLesson, ListLessons, DeleteLesson, UpdateLesson,
 		CreateConstraint, ListConstraints, DeleteConstraint,
 		DeleteTeacher, DeleteSubject, DeleteClass, DeleteRoom, DeleteScheduleEntry, SaveFile,
 		Generate, GeneratePrecise, MoveEntry, ReplaceSchedule, ListSchedule, ExportAll, ImportAll, ScheduleCSV, ExportRefsCSV, ImportRefsCSV, GetSchoolSettings, UpdateSchoolSettings
@@ -24,6 +24,7 @@
 	let c = { name: "", grade: 0, student_count: 0, subgroup_of: null };
 	let r = { name: "", capacity: 30, room_type: "any" };
 	let l = { class_id: 0, subject_id: 0, teacher_id: 0, hours_per_week: 1, min_gap_days: 1, can_split: false, preferred_rooms: "[]" };
+	let curClass = 0;
 	let con = { type: "teacher_unavailable", entity_type: "teacher", entity_id: 0, day_of_week: null, timeslot_start: null, timeslot_end: null, weight: 100, is_hard: true };
 
 	let days = 6, slots = 8;
@@ -148,6 +149,17 @@
 	async function addClass() { await CreateClass({ ...c, school_id: activeSchoolID }); c = { name: "", grade: 0, student_count: 0 }; await reloadRefs(); }
 	async function addRoom() { await CreateRoom({ ...r, school_id: activeSchoolID }); r = { name: "", capacity: 30, room_type: "any" }; await reloadRefs(); }
 	async function addLesson() { await CreateLesson({ ...l, school_id: activeSchoolID }); l = { class_id: 0, subject_id: 0, teacher_id: 0, hours_per_week: 1, min_gap_days: 1, can_split: false, preferred_rooms: "[]" }; await reloadRefs(); }
+	async function addLessonForClass() {
+		if (!curClass || !l.subject_id || !l.teacher_id) { flash("Выберите класс, предмет и учителя"); return; }
+		await CreateLesson({ school_id: activeSchoolID, class_id: curClass, subject_id: l.subject_id, teacher_id: l.teacher_id, hours_per_week: l.hours_per_week || 1, min_gap_days: l.min_gap_days || 1, can_split: false, preferred_rooms: "[]" });
+		l = { class_id: 0, subject_id: 0, teacher_id: 0, hours_per_week: 1, min_gap_days: 1, can_split: false, preferred_rooms: "[]" };
+		await reloadRefs();
+	}
+	async function updateLesson(x) {
+		try {
+			await UpdateLesson({ id: x.id, school_id: x.school_id, class_id: x.class_id, subject_id: x.subject_id, teacher_id: x.teacher_id, hours_per_week: x.hours_per_week || 1, min_gap_days: x.min_gap_days || 1, can_split: x.can_split, preferred_rooms: x.preferred_rooms || "[]" });
+		} catch (e) { flash("Ошибка обновления урока: " + (e && e.message ? e.message : e)); }
+	}
 	async function addConstraint() {
 		const payload = { ...con, school_id: activeSchoolID };
 		if (payload.entity_type === "school") payload.entity_id = activeSchoolID;
@@ -711,28 +723,33 @@
 						</div>
 					</div>
 					<div class="lesson-form">
-						<select bind:value={l.class_id}><option value={0}>Класс</option>{#each classes as x}<option value={x.id}>{x.name}</option>{/each}</select>
-						<select bind:value={l.subject_id}><option value={0}>Предмет</option>{#each subjects as x}<option value={x.id}>{x.name}</option>{/each}</select>
-						<select bind:value={l.teacher_id}><option value={0}>Учитель</option>{#each teachers as x}<option value={x.id}>{x.name}</option>{/each}</select>
-						<input type="number" bind:value={l.hours_per_week} placeholder="Часов/нед" />
-						<input type="number" bind:value={l.min_gap_days} placeholder="Мин. дней между" />
-						<label class="chk"><input type="checkbox" bind:checked={l.can_split} /> делить</label>
-						<button class="primary" on:click={addLesson}>+ Добавить урок</button>
+						<select bind:value={curClass}><option value={0}>Выберите класс…</option>{#each classes as x}<option value={x.id}>{x.name}</option>{/each}</select>
 					</div>
-					<table class="data">
-						<thead><tr><th>Класс</th><th>Предмет</th><th>Учитель</th><th>Ч/нед</th><th></th></tr></thead>
-						<tbody>
-							{#each lessons as x}
-								<tr>
-									<td>{className(classes, x.class_id)}</td>
-									<td>{subjName(subjects, x.subject_id)}</td>
-									<td>{teachName(teachers, x.teacher_id)}</td>
-									<td>{x.hours_per_week}</td>
-									<td class="act"><button class="danger sm" on:click={() => removeLesson(x.id)}>✕</button></td>
+					{#if curClass}
+						{@const cl = lessons.filter((x) => x.class_id === curClass)}
+						<table class="data">
+							<thead><tr><th>Предмет</th><th>Учитель</th><th>Ч/нед</th><th></th></tr></thead>
+							<tbody>
+								{#each cl as x}
+									<tr>
+										<td>{subjName(subjects, x.subject_id)}</td>
+										<td><select bind:value={x.teacher_id} on:change={() => updateLesson(x)}>{#each teachers as t}<option value={t.id}>{t.name}</option>{/each}</select></td>
+										<td><input type="number" min="1" max="40" bind:value={x.hours_per_week} on:change={() => updateLesson(x)} /></td>
+										<td class="act"><button class="danger sm" on:click={() => removeLesson(x.id)}>✕</button></td>
+									</tr>
+								{/each}
+								<tr class="addrow">
+									<td><select bind:value={l.subject_id}><option value={0}>Предмет</option>{#each subjects as s}<option value={s.id}>{s.name}</option>{/each}</select></td>
+									<td><select bind:value={l.teacher_id}><option value={0}>Учитель</option>{#each teachers as t}<option value={t.id}>{t.name}</option>{/each}</select></td>
+									<td><input type="number" min="1" max="40" bind:value={l.hours_per_week} placeholder="Ч/нед" /></td>
+									<td class="act"><button class="primary sm" on:click={addLessonForClass}>+ Добавить</button></td>
 								</tr>
-							{/each}
-						</tbody>
-					</table>
+							</tbody>
+						</table>
+						{#if cl.length === 0}<p class="muted">У этого класса пока нет уроков. Добавьте предмет и учителя выше.</p>{/if}
+					{:else}
+						<p class="muted">Выберите класс, чтобы увидеть и редактировать его учебный план (предмет + учитель + часы в неделю).</p>
+					{/if}
 				</section>
 			{:else if tab === "constraints"}
 				<section class="card">

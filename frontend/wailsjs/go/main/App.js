@@ -138,6 +138,10 @@ export function ScheduleCSV(arg1, arg2, arg3) {
   return window['go']['main']['App']['ScheduleCSV'](arg1, arg2, arg3);
 }
 
+export function UpdateLesson(arg1) {
+  return window['go']['main']['App']['UpdateLesson'](arg1);
+}
+
 export function UpdateSchoolSettings(arg1, arg2) {
   return window['go']['main']['App']['UpdateSchoolSettings'](arg1, arg2);
 }
