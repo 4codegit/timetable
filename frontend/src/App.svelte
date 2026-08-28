@@ -182,25 +182,39 @@
 		await reloadSchedule();
 		flash(`CP-SAT: размещено ${genResult.placed}/${genResult.total}`);
 	}
+	async function applyMove(id, kind, rowId, day, slot) {
+		const src = schedule.find(en => en.id === id);
+		if (!src) return;
+		await pushHistory();
+		const target = schedule.find(en => {
+			if (en.id === id) return false;
+			if (en.day_of_week !== day || en.timeslot !== slot) return false;
+			if (kind === "class") return en.class_id === rowId;
+			if (kind === "teacher") return en.teacher_id === rowId;
+			return en.room_id === rowId;
+		});
+		if (target) await MoveEntry(target.id, src.day_of_week, src.timeslot);
+		await MoveEntry(id, day, slot);
+		await reloadSchedule();
+	}
 	async function onDrop(e, kind, id, day, slot) {
 		e.preventDefault();
 		const did = parseInt(e.dataTransfer.getData("text/plain"));
 		if (!did) return;
-		const src = schedule.find(en => en.id === did);
-		if (!src) return;
-		await pushHistory();
-		const target = schedule.find(en => {
-			if (en.id === did) return false;
-			if (en.day_of_week !== day || en.timeslot !== slot) return false;
-			if (kind === "class") return en.class_id === id;
-			if (kind === "teacher") return en.teacher_id === id;
-			return en.room_id === id;
-		});
-		if (target && target.id !== did) {
-			await MoveEntry(target.id, src.day_of_week, src.timeslot);
+		await applyMove(did, kind, id, day, slot);
+	}
+	let selectedEntry = null;
+	async function onCellClick(e, cell, kind, rowId, day, slot) {
+		if (!cell) {
+			if (selectedEntry) { await applyMove(selectedEntry.id, kind, rowId, day, slot); selectedEntry = null; }
+			return;
 		}
-		await MoveEntry(did, day, slot);
-		await reloadSchedule();
+		if (selectedEntry && selectedEntry.id !== cell.id) {
+			await applyMove(selectedEntry.id, kind, rowId, day, slot);
+			selectedEntry = null;
+			return;
+		}
+		selectedEntry = (selectedEntry && selectedEntry.id === cell.id) ? null : { id: cell.id };
 	}
 	function cellAt(kind, id, day, slot) {
 		const e = schedule.find((en) => {
@@ -223,7 +237,7 @@
 
 	async function exportJSON() {
 		const snap = await ExportAll(activeSchoolID);
-		await download(JSON.stringify(snap, null, 2), "school.json", "application/json");
+		await saveFile("school.json", JSON.stringify(snap, null, 2), "application/json", false);
 	}
 	async function importJSON(ev) {
 		const text = await ev.target.files[0].text();
@@ -234,7 +248,7 @@
 	}
 	async function exportCSV() {
 		const csv = await ScheduleCSV(activeSchoolID, days, slots);
-		await download(csv, "schedule.csv", "text/csv");
+		await saveFile("schedule.csv", csv, "text/csv", false);
 	}
 	function hexToRgb(hex) {
 		const h = String(hex).replace("#", "");
@@ -313,17 +327,7 @@
 		}
 		const base64 = doc.output("base64");
 		const defName = "Расписание_" + fileSlug(pdfSchoolName()) + "_" + new Date().toISOString().slice(0, 10) + ".pdf";
-		let path = "";
-		try {
-			path = await window.runtime.SaveFileDialog({
-				Title: "Сохранить расписание (PDF)",
-				DefaultFilename: defName,
-				Filters: [{ DisplayName: "PDF", Pattern: "*.pdf" }]
-			});
-		} catch (e) { path = ""; }
-		if (!path) return;
-		await SaveFile(path, base64);
-		flash("PDF сохранён: " + path);
+		await saveFile(defName, base64, "application/pdf", true);
 	}
 	function entityRows(kind) {
 		if (kind === "teacher") return teachers.map((t) => ({ id: t.id, label: t.name }));
@@ -425,19 +429,40 @@
 	function escapeHtml(s) {
 		return String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 	}
-	async function download(content, filename, type) {
-		let path = "";
+	function base64ToBlob(b64, mime) {
+		const bin = atob(b64);
+		const len = bin.length;
+		const bytes = new Uint8Array(len);
+		for (let i = 0; i < len; i++) bytes[i] = bin.charCodeAt(i);
+		return new Blob([bytes], { type: mime });
+	}
+	async function saveFile(filename, content, mime, isBase64) {
+		const b64 = isBase64 ? content : btoa(unescape(encodeURIComponent(content)));
 		try {
-			path = await window.runtime.SaveFileDialog({ Title: "Сохранить файл", DefaultFilename: filename, Filters: [] });
-		} catch (e) { path = ""; }
-		if (!path) return;
-		const b64 = btoa(unescape(encodeURIComponent(content)));
-		await SaveFile(path, b64);
-		flash("Сохранено: " + path);
+			if (window.runtime && typeof window.runtime.SaveFileDialog === "function") {
+				const path = await window.runtime.SaveFileDialog({ Title: "Сохранить файл", DefaultFilename: filename, Filters: [] });
+				if (path) {
+					await SaveFile(path, b64);
+					flash("Сохранено: " + path);
+					return;
+				}
+				return;
+			}
+		} catch (e) { /* fall back to browser download */ }
+		try {
+			const blob = isBase64 ? base64ToBlob(content, mime) : new Blob([content], { type: mime });
+			const url = URL.createObjectURL(blob);
+			const a = document.createElement("a");
+			a.href = url; a.download = filename; document.body.appendChild(a); a.click(); a.remove();
+			URL.revokeObjectURL(url);
+			flash("Файл скачан: " + filename);
+		} catch (e) {
+			flash("Ошибка сохранения: " + e.message);
+		}
 	}
 	async function downloadRefsCSV(entity) {
 		const csv = await ExportRefsCSV(activeSchoolID, entity);
-		await download(csv, entity + ".csv", "text/csv");
+		await saveFile(entity + ".csv", csv, "text/csv", false);
 	}
 	async function importRefsCSV(entity, e) {
 		const file = e.target.files && e.target.files[0];
@@ -776,7 +801,7 @@
 						<label class="file">⬆ JSON<input type="file" accept="application/json" on:change={importJSON} /></label>
 					</div>
 					{#if genResult}<p class="status">Размещено <b>{genResult.placed}/{genResult.total}</b> · мягких нарушений: <b>{genResult.violations}</b></p>{/if}
-					<p class="hint">Перетащите урок в другую ячейку, чтобы отредактировать вручную.</p>
+					<p class="hint">Чтобы переместить урок: перетащите ячейку в другую (drag&drop) либо кликните урок, затем кликните целевую ячейку. Повторный клик по выделенному снимает выделение.</p>
 					{#if schedule.length === 0}
 						<p class="empty">Расписание пусто. Добавьте уроки и нажмите «Сгенерировать».</p>
 					{:else}
@@ -793,9 +818,11 @@
 													class:conflict={!!cell && cell.conflict}
 													style={cell ? 'background:' + subjectColor(cell.subject_id) : ''}
 													draggable={!!cell}
+													class:selected={selectedEntry && cell && selectedEntry.id === cell.id}
 													on:dragstart={(e) => { if (!cell) return; e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("text/plain", String(cell.id)); }}
 													on:dragover={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = "move"; }}
-													on:drop={(e) => onDrop(e, viewMode, row.id, di, si)}>{#if cell}{cell.label}<button class="cell-x" title="Удалить" on:click={(e) => { e.stopPropagation(); removeEntry(cell.id); }}>✕</button>{:else}{/if}</td>{/each}</tr>
+													on:drop={(e) => onDrop(e, viewMode, row.id, di, si)}
+													on:click={(e) => onCellClick(e, cell, viewMode, row.id, di, si)}>{#if cell}{cell.label}<button class="cell-x" title="Удалить" on:click={(e) => { e.stopPropagation(); removeEntry(cell.id); }}>✕</button>{:else}{/if}</td>{/each}</tr>
 											{/each}
 										</tbody>
 									</table>
@@ -926,6 +953,7 @@
 	td.filled.conflict { background: #b91c1c !important; color: #fff; }
 	.cell-x { position: absolute; top: 1px; right: 1px; border: none; background: rgba(0,0,0,0.18); color: #fff; width: 16px; height: 16px; line-height: 14px; border-radius: 4px; cursor: pointer; font-size: 10px; padding: 0; }
 	td.filled { position: relative; }
+	td.filled.selected { outline: 3px solid #1d4ed8; outline-offset: -2px; }
 	.class-block table.compact th, .class-block table.compact td { padding: 1px 3px; font-size: 9px; height: 22px; }
 	.class-block.compact h3 { font-size: 11px; margin: 0 0 4px; }
 
