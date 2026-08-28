@@ -294,6 +294,7 @@
 	}
 
 	async function exportPDF() {
+		try {
 		const kind = exportMode === "school" ? "class" : exportMode;
 		const list = entityRows(kind);
 		const daysN = pdfWeekdaysOnly ? Math.min(days, 5) : days;
@@ -363,7 +364,14 @@
 		}
 		const base64 = doc.output("base64");
 		const defName = "Расписание_" + fileSlug(pdfSchoolName()) + "_" + new Date().toISOString().slice(0, 10) + ".pdf";
-		await saveFile(defName, base64, "application/pdf", true);
+		try {
+			await saveFile(defName, base64, "application/pdf", true);
+		} catch (err) {
+			flash("Ошибка сохранения PDF: " + (err && err.message ? err.message : err));
+		}
+		} catch (e) {
+			flash("Ошибка генерации PDF: " + (e && e.message ? e.message : e));
+		}
 	}
 	function entityRows(kind) {
 		if (kind === "teacher") return teachers.map((t) => ({ id: t.id, label: t.name }));
@@ -988,7 +996,7 @@
 	.class-block th, .class-block td { border: 1px solid #e2e8f0; padding: 6px 8px; text-align: center; font-size: 12px; height: 38px; user-select: none; -webkit-user-select: none; }
 	.class-block th { background: #f8fafc; color: #64748b; font-weight: 600; }
 	.class-block td.day { background: #f1f5f9; font-weight: 600; white-space: nowrap; }
-	td.filled { cursor: grab; border-radius: 4px; font-weight: 500; }
+	td.filled { cursor: grab; border-radius: 4px; font-weight: 500; touch-action: none; }
 	td.filled:active { cursor: grabbing; }
 	td.filled.conflict { background: #b91c1c !important; color: #fff; }
 	.cell-x { position: absolute; top: 1px; right: 1px; border: none; background: rgba(0,0,0,0.18); color: #fff; width: 16px; height: 16px; line-height: 14px; border-radius: 4px; cursor: pointer; font-size: 10px; padding: 0; }
