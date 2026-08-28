@@ -25,9 +25,7 @@
 	let con = { type: "teacher_unavailable", entity_type: "teacher", entity_id: 0, day_of_week: null, timeslot_start: null, timeslot_end: null, weight: 100, is_hard: true };
 
 	let days = 6, slots = 8;
-	let bellPeriods = [];   // [{start,end}] length = slots
-	let newPeriodStart = "08:00";
-	let newPeriodEnd = "08:45";
+	let bellPeriods = [];
 	let genResult = null;
 	let usePrecise = false;
 	let viewMode = "class";
@@ -37,10 +35,9 @@
 		? rooms.map((r) => ({ id: r.id, label: r.name }))
 		: classes.map((c) => ({ id: c.id, label: c.name }));
 
-	// export / print
-	let exportMode = "school";   // school | class | teacher | room
-	let pageSize = "A2";          // A0 | A1 | A2 | A3 | A4
-	let orientation = "landscape";// portrait | landscape
+	let exportMode = "school";
+	let pageSize = "A2";
+	let orientation = "landscape";
 	let compact = false;
 	let pdfShowTeacher = true;
 	let pdfShowRoom = true;
@@ -56,7 +53,7 @@
 	function flash(m) { msg = m; setTimeout(() => msg = "", 3000); }
 
 	async function loadSchools() {
-		schools = await ListSchools();
+		schools = (await ListSchools()) || [];
 		if (schools.length && !activeSchoolID) activeSchoolID = schools[0].id;
 		await loadSettings();
 	}
@@ -97,15 +94,16 @@
 	}
 	async function reloadRefs() {
 		if (!activeSchoolID) return;
-		[teachers, subjects, classes, rooms, lessons, constraints] = await Promise.all([
+		const res = await Promise.all([
 			ListTeachers(activeSchoolID), ListSubjects(activeSchoolID),
 			ListClasses(activeSchoolID), ListRooms(activeSchoolID),
 			ListLessons(activeSchoolID), ListConstraints(activeSchoolID)
 		]);
+		[teachers, subjects, classes, rooms, lessons, constraints] = res.map((x) => x || []);
 	}
 	async function reloadSchedule() {
 		if (!activeSchoolID) return;
-		schedule = await ListSchedule(activeSchoolID);
+		schedule = (await ListSchedule(activeSchoolID)) || [];
 		recomputeConflicts();
 	}
 
@@ -166,7 +164,7 @@
 			usePrecise = true;
 			flash("Крупная школа: включён точный CP-SAT (OR-Tools). Для 35+ классов нужна сборка с OR-Tools.");
 		}
-		genResult = usePrecise ? await GeneratePrecise(activeSchoolID, days, slots) : await Generate(activeSchoolID, days, slots);
+		genResult = (usePrecise ? await GeneratePrecise(activeSchoolID, days, slots) : await Generate(activeSchoolID, days, slots)) || {};
 		await reloadSchedule();
 		flash(`Размещено ${genResult.placed}/${genResult.total}, нарушений (мягких): ${genResult.violations}`);
 	}
@@ -185,7 +183,7 @@
 		await pushHistory();
 		const target = schedule.find(en => en.class_id === classID && en.day_of_week === day && en.timeslot === slot);
 		if (target && target.id !== id) {
-			await MoveEntry(target.id, src.day_of_week, src.timeslot); // swap
+			await MoveEntry(target.id, src.day_of_week, src.timeslot);
 		}
 		await MoveEntry(id, day, slot);
 		await reloadSchedule();
@@ -369,11 +367,9 @@
 		}
 	}
 
-	// seed demo data for quick validation
 	async function seedDemo() {
 		if (!activeSchoolID) { await createSchool(); }
 		const sid = activeSchoolID;
-		const mk = async (fn) => fn();
 		const T = await CreateTeacher({ school_id: sid, name: "Иванов", short_name: "Ив", max_hours_per_week: 30 });
 		const T2 = await CreateTeacher({ school_id: sid, name: "Петрова", short_name: "Пт", max_hours_per_week: 30 });
 		const S1 = await CreateSubject({ school_id: sid, name: "Математика", short_name: "М", requires_room_type: "any" });
@@ -430,7 +426,6 @@
 		flash("Демо (35 классов) загружено: " + classes.length + " классов");
 	}
 
-	// ---- template helpers ----
 	function className(list, id) { const x = list.find(c => c.id === id); return x ? x.name : "?"; }
 	function subjName(list, id) { const x = list.find(s => s.id === id); return x ? x.name : "?"; }
 	function teachName(list, id) { const x = list.find(t => t.id === id); return x ? (x.short_name || x.name) : "?"; }
@@ -447,271 +442,402 @@
 </script>
 
 <div class="app">
-	<header>
-		<h1>📅 Timetable</h1>
-		<div class="school-bar">
-			<select bind:value={activeSchoolID} on:change={async () => { await reloadRefs(); await loadSettings(); }}>
-				{#each schools as sc}<option value={sc.id}>{sc.name}</option>{/each}
-			</select>
-			<input bind:value={newSchoolName} placeholder="Новая школа" />
-			<button on:click={createSchool}>+ Школа</button>
-			<button on:click={seedDemo}>⚡ Демо-данные</button>
-			<button on:click={seedDemoLarge}>⚡ Демо 35 классов</button>
+	<aside class="sidebar">
+		<div class="brand">📅 <span>Timetable</span></div>
+		<nav class="nav">
+			<button class:active={tab === "refs"} on:click={() => tab = "refs"}><span class="ico">📚</span>Справочники</button>
+			<button class:active={tab === "lessons"} on:click={() => tab = "lessons"}><span class="ico">📝</span>Учебный план</button>
+			<button class:active={tab === "constraints"} on:click={() => tab = "constraints"}><span class="ico">⚠️</span>Ограничения</button>
+			<button class:active={tab === "settings"} on:click={() => tab = "settings"}><span class="ico">⚙️</span>Настройки</button>
+			<button class:active={tab === "schedule"} on:click={() => tab = "schedule"}><span class="ico">🗓️</span>Расписание</button>
+		</nav>
+		<div class="side-foot">
+			<button class="ghost" on:click={seedDemo}>⚡ Демо-данные</button>
+			<button class="ghost" on:click={seedDemoLarge}>⚡ Демо 35 классов</button>
 		</div>
-		{#if msg}<div class="toast">{msg}</div>{/if}
-	</header>
+	</aside>
 
-	<nav>
-		<button class:active={tab === "refs"} on:click={() => tab = "refs"}>Справочники</button>
-		<button class:active={tab === "lessons"} on:click={() => tab = "lessons"}>Уроки</button>
-		<button class:active={tab === "constraints"} on:click={() => tab = "constraints"}>Ограничения</button>
-		<button class:active={tab === "settings"} on:click={() => tab = "settings"}>Настройки</button>
-		<button class:active={tab === "schedule"} on:click={() => tab = "schedule"}>Расписание</button>
-	</nav>
-
-	<main>
-		{#if tab === "refs"}
-			<div class="grid3">
-				<section>
-					<h2>Учителя <span class="csvbar"><button on:click={() => downloadRefsCSV('teachers')}>⬇ CSV</button><label class="file">⬆<input type="file" accept=".csv" on:change={(e) => importRefsCSV('teachers', e)} /></label></span></h2>
-					<div class="row"><input bind:value={t.name} placeholder="Имя" /><input bind:value={t.short_name} placeholder="Кратко" /><input type="number" bind:value={t.max_hours_per_week} /><button on:click={addTeacher}>+</button></div>
-					<ul>{#each teachers as x}<li>{x.name} <small>({x.short_name})</small> — {x.max_hours_per_week}ч/нед</li>{/each}</ul>
-				</section>
-				<section>
-					<h2>Предметы <span class="csvbar"><button on:click={() => downloadRefsCSV('subjects')}>⬇ CSV</button><label class="file">⬆<input type="file" accept=".csv" on:change={(e) => importRefsCSV('subjects', e)} /></label></span></h2>
-					<div class="row"><input bind:value={s.name} placeholder="Название" /><input bind:value={s.short_name} placeholder="Кратко" /><input bind:value={s.requires_room_type} placeholder="Тип каб." /><button on:click={addSubject}>+</button></div>
-					<ul>{#each subjects as x}<li>{x.name} <small>({x.short_name})</small></li>{/each}</ul>
-				</section>
-				<section>
-					<h2>Классы <span class="csvbar"><button on:click={() => downloadRefsCSV('classes')}>⬇ CSV</button><label class="file">⬆<input type="file" accept=".csv" on:change={(e) => importRefsCSV('classes', e)} /></label></span></h2>
-					<div class="row">
-						<input bind:value={c.name} placeholder="10А" />
-						<input type="number" bind:value={c.grade} placeholder="Класс" />
-						<input type="number" bind:value={c.student_count} placeholder="Уч-ся" />
-						<select bind:value={c.subgroup_of}><option value={null}>— целый класс —</option>{#each classes as x}<option value={x.id}>{x.name} (подгруппа)</option>{/each}</select>
-						<button on:click={addClass}>+</button>
-					</div>
-					<ul>{#each classes as x}<li>{x.name} — {x.student_count} чел.{x.subgroup_of ? " · подгруппа" : ""}</li>{/each}</ul>
-				</section>
-				<section>
-					<h2>Кабинеты <span class="csvbar"><button on:click={() => downloadRefsCSV('rooms')}>⬇ CSV</button><label class="file">⬆<input type="file" accept=".csv" on:change={(e) => importRefsCSV('rooms', e)} /></label></span></h2>
-					<div class="row"><input bind:value={r.name} placeholder="301" /><input type="number" bind:value={r.capacity} /><input bind:value={r.room_type} placeholder="Тип" /><button on:click={addRoom}>+</button></div>
-					<ul>{#each rooms as x}<li>{x.name} — {x.capacity} мест</li>{/each}</ul>
-				</section>
+	<div class="content">
+		<header class="topbar">
+			<div class="school">
+				<select bind:value={activeSchoolID} on:change={async () => { await reloadRefs(); await loadSettings(); }}>
+					{#each schools as sc}<option value={sc.id}>{sc.name}</option>{/each}
+				</select>
+				{#if schools.length === 0}<span class="muted">нет школ</span>{/if}
+				<input class="school-new" bind:value={newSchoolName} placeholder="Новая школа" />
+				<button class="primary sm" on:click={createSchool}>+ Школа</button>
 			</div>
-		{:else if tab === "lessons"}
-			<section>
-				<h2>Учебный план (уроки) <span class="csvbar"><button on:click={() => downloadRefsCSV('lessons')}>⬇ CSV</button><label class="file">⬆<input type="file" accept=".csv" on:change={(e) => importRefsCSV('lessons', e)} /></label></span></h2>
-				<div class="lesson-form">
-					<select bind:value={l.class_id}><option value={0}>Класс</option>{#each classes as x}<option value={x.id}>{x.name}</option>{/each}</select>
-					<select bind:value={l.subject_id}><option value={0}>Предмет</option>{#each subjects as x}<option value={x.id}>{x.name}</option>{/each}</select>
-					<select bind:value={l.teacher_id}><option value={0}>Учитель</option>{#each teachers as x}<option value={x.id}>{x.name}</option>{/each}</select>
-					<input type="number" bind:value={l.hours_per_week} placeholder="Часов/нед" />
-					<input type="number" bind:value={l.min_gap_days} placeholder="Мин. дней между" />
-					<label><input type="checkbox" bind:checked={l.can_split} /> делить</label>
-					<button on:click={addLesson}>+ Добавить урок</button>
-				</div>
-				<table>
-					<thead><tr><th>Класс</th><th>Предмет</th><th>Учитель</th><th>Ч/нед</th><th></th></tr></thead>
-					<tbody>
-						{#each lessons as x}
-							<tr>
-								<td>{className(classes, x.class_id)}</td>
-								<td>{subjName(subjects, x.subject_id)}</td>
-								<td>{teachName(teachers, x.teacher_id)}</td>
-								<td>{x.hours_per_week}</td>
-								<td><button on:click={() => removeLesson(x.id)}>✕</button></td>
-							</tr>
-						{/each}
-					</tbody>
-				</table>
-			</section>
-		{:else if tab === "constraints"}
-			<section>
-				<h2>Ограничения</h2>
-				<div class="lesson-form">
-					<select bind:value={con.type}>
-						<option value="teacher_unavailable">Учитель недоступен</option>
-						<option value="class_unavailable">Класс недоступен</option>
-						<option value="room_unavailable">Кабинет недоступен</option>
-						<option value="max_consecutive">Макс. подряд (уроков)</option>
-						<option value="lunch_break">Обеденный перерыв</option>
-						<option value="max_lessons_per_day">Макс. уроков в день</option>
-						<option value="min_lessons_per_day">Мин. уроков в день</option>
-						<option value="prefer_morning">Желательно утро</option>
-						<option value="max_gaps">Макс. окон</option>
-					</select>
-					<select bind:value={con.entity_type}><option value="teacher">Учитель</option><option value="class">Класс</option><option value="room">Кабинет</option><option value="school">Школа</option></select>
-					{#if con.entity_type === "school"}
-						<span>вся школа</span>
-					{:else}
-						<select bind:value={con.entity_id}><option value={0}>Сущность</option>{#if con.entity_type==="teacher"}{#each teachers as x}<option value={x.id}>{x.name}</option>{/each}{:else if con.entity_type==="class"}{#each classes as x}<option value={x.id}>{x.name}</option>{/each}{:else if con.entity_type==="room"}{#each rooms as x}<option value={x.id}>{x.name}</option>{/each}{/if}</select>
-					{/if}
-					<input type="number" bind:value={con.day_of_week} placeholder="День(0-5)" />
-					<input type="number" bind:value={con.timeslot_start} placeholder="Слот с" />
-					<input type="number" bind:value={con.timeslot_end} placeholder="Слот по" />
-					{#if ["max_consecutive","lunch_break","max_lessons_per_day","min_lessons_per_day"].includes(con.type)}
-						<input type="number" bind:value={con.weight} placeholder="Значение" />
-					{/if}
-					<label><input type="checkbox" bind:checked={con.is_hard} /> жёсткое</label>
-					<button on:click={addConstraint}>+ Добавить</button>
-				</div>
-				<ul>{#each constraints as x}<li>{x.type} → {x.entity_type}#{x.entity_id} {x.is_hard ? "жёсткое" : "мягкое"}</li>{/each}</ul>
-			</section>
-		{:else if tab === "settings"}
-			<section>
-				<h2>Настройки школы</h2>
-				<div class="row">
-					<label>Учебных дней: <input type="number" min="1" max="7" bind:value={days} /></label>
-					<label>Уроков в день: <input type="number" min="1" max="14" bind:value={slots} on:change={onSlotsChange} /></label>
-					<button on:click={saveSettings}>Сохранить</button>
-					<span class="csvbar"><button on:click={() => downloadRefsCSV('periods')}>⬇ CSV звонков</button><label class="file">⬆<input type="file" accept=".csv" on:change={(e) => importRefsCSV('periods', e)} /></label></span>
-				</div>
-				<h3>Расписание звонков</h3>
-				<table>
-					<thead><tr><th>Урок</th><th>Начало</th><th>Конец</th></tr></thead>
-					<tbody>
-						{#each Array(slots) as _, si}
-							<tr>
-								<td>П{si + 1}</td>
-								<td><input type="time" bind:value={bellPeriods[si].start} /></td>
-								<td><input type="time" bind:value={bellPeriods[si].end} /></td>
-							</tr>
-						{/each}
-					</tbody>
-				</table>
-				<p class="hint">Время отображается в шапке расписания и в PDF. Хранится в базе (SQLite).</p>
-			</section>
-		{:else if tab === "schedule"}
-			<section>
-				<div class="gen-bar">
-					<label>Дней: <input type="number" bind:value={days} style="width:50px" /></label>
-					<label>Слотов: <input type="number" bind:value={slots} style="width:50px" /></label>
-					<button class="primary" on:click={generate}>⚙ Сгенерировать</button>
-					<button on:click={undo}>↶ Отменить</button>
-					<label><input type="checkbox" bind:checked={usePrecise} /> точный CP-SAT (OR-Tools)</label>
-					<label>Вид:
-						<select bind:value={viewMode}>
-							<option value="class">по классам</option>
-							<option value="teacher">по учителям</option>
-							<option value="room">по кабинетам</option>
-						</select>
-					</label>
-					<label class="chk"><input type="checkbox" bind:checked={compact} /> компактный</label>
-					{#if viewMode === "class" && rows.length > classesPerPage}
-						<span class="pager">
-							<button on:click={() => classPage = Math.max(0, classPage - 1)} disabled={classPage === 0}>‹</button>
-							<span>{classPage + 1}/{totalClassPages}</span>
-							<button on:click={() => classPage = Math.min(totalClassPages - 1, classPage + 1)} disabled={classPage >= totalClassPages - 1}>›</button>
-						</span>
-					{/if}
-					<span class="sep" />
-					<label>Экспорт:
-						<select bind:value={exportMode}>
-							<option value="school">вся школа (плакат)</option>
-							<option value="class">по классам (отд. стр.)</option>
-							<option value="teacher">по учителям</option>
-							<option value="room">по кабинетам</option>
-						</select>
-					</label>
-					<label>Стр.:
-						<select bind:value={pageSize}>
-							<option value="A0">A0</option>
-							<option value="A1">A1</option>
-							<option value="A2">A2</option>
-							<option value="A3">A3</option>
-							<option value="A4">A4</option>
-						</select>
-					</label>
-					<label>Ориент.:
-						<select bind:value={orientation}>
-							<option value="landscape">альбомн.</option>
-							<option value="portrait">книжн.</option>
-						</select>
-					</label>
-					<label class="chk"><input type="checkbox" bind:checked={pdfShowTeacher} /> учителя</label>
-					<label class="chk"><input type="checkbox" bind:checked={pdfShowRoom} /> кабинеты</label>
-					<label class="chk"><input type="checkbox" bind:checked={pdfWeekdaysOnly} /> будни</label>
-					<label class="chk"><input type="checkbox" bind:checked={pdfBW} /> ч/б</label>
-					<button on:click={exportPDF}>⬇ PDF</button>
-					<button on:click={exportCSV}>⬇ CSV</button>
-					<button on:click={exportJSON}>⬇ JSON</button>
-					<label class="file">⬆ JSON<input type="file" accept="application/json" on:change={importJSON} /></label>
-				</div>
-				{#if genResult}<p class="status">Размещено <b>{genResult.placed}/{genResult.total}</b> · мягких нарушений: <b>{genResult.violations}</b></p>{/if}
-				<p class="hint">Перетащите урок в другую ячейку, чтобы отредактировать вручную.</p>
-				{#if schedule.length === 0}
-					<p class="empty">Расписание пусто. Добавьте уроки и нажмите «Сгенерировать».</p>
-				{:else}
-					<div class="grid-scroll">
-						{#each visibleRows as row}
-							<div class="class-block" class:compact>
-								<h3>{row.label}</h3>
-								<table class:compact>
-									<thead><tr><th>День</th>{#each Array(slots) as _, si}<th>П{si + 1}{periodLabel(si) ? " " + periodLabel(si) : ""}</th>{/each}</tr></thead>
-									<tbody>
-										{#each Array(days) as _, di}
-											<tr><td class="day">{dayName(di)}</td>{#each Array(slots) as _, si}{@const cell = cellAt(viewMode, row.id, di, si)}<td
-												class:filled={!!cell}
-												class:conflict={!!cell && cell.conflict}
-												draggable={viewMode === "class" && !!cell}
-												on:dragstart={(e) => cell && e.dataTransfer.setData("text/plain", String(cell.id))}
-												on:dragover={(e) => e.preventDefault()}
-												on:drop={viewMode === "class" ? (e) => onDrop(e, row.id, di, si) : null}>{cell ? cell.label : ""}</td>{/each}</tr>
-										{/each}
-									</tbody>
-								</table>
+			{#if msg}<div class="toast">{msg}</div>{/if}
+		</header>
+
+		<main>
+			{#if tab === "refs"}
+				<div class="cards">
+					<section class="card">
+						<div class="card-head">
+							<h2>Учителя</h2>
+							<div class="csvbar">
+								<button class="mini" on:click={() => downloadRefsCSV('teachers')}>⬇ CSV</button>
+								<label class="mini file">⬆<input type="file" accept=".csv" on:change={(e) => importRefsCSV('teachers', e)} /></label>
 							</div>
-						{/each}
+						</div>
+						<div class="row">
+							<input bind:value={t.name} placeholder="Имя" />
+							<input bind:value={t.short_name} placeholder="Кратко" />
+							<input type="number" bind:value={t.max_hours_per_week} title="Часов/нед" />
+							<button class="primary" on:click={addTeacher}>+</button>
+						</div>
+						<ul class="list">{#each teachers as x}<li>{x.name} <small>({x.short_name})</small> <span class="muted">— {x.max_hours_per_week}ч/нед</span></li>{/each}</ul>
+					</section>
+
+					<section class="card">
+						<div class="card-head">
+							<h2>Предметы</h2>
+							<div class="csvbar">
+								<button class="mini" on:click={() => downloadRefsCSV('subjects')}>⬇ CSV</button>
+								<label class="mini file">⬆<input type="file" accept=".csv" on:change={(e) => importRefsCSV('subjects', e)} /></label>
+							</div>
+						</div>
+						<div class="row">
+							<input bind:value={s.name} placeholder="Название" />
+							<input bind:value={s.short_name} placeholder="Кратко" />
+							<input bind:value={s.requires_room_type} placeholder="Тип каб." />
+							<button class="primary" on:click={addSubject}>+</button>
+						</div>
+						<ul class="list">{#each subjects as x}<li>{x.name} <small>({x.short_name})</small></li>{/each}</ul>
+					</section>
+
+					<section class="card">
+						<div class="card-head">
+							<h2>Классы</h2>
+							<div class="csvbar">
+								<button class="mini" on:click={() => downloadRefsCSV('classes')}>⬇ CSV</button>
+								<label class="mini file">⬆<input type="file" accept=".csv" on:change={(e) => importRefsCSV('classes', e)} /></label>
+							</div>
+						</div>
+						<div class="row">
+							<input bind:value={c.name} placeholder="10А" />
+							<input type="number" bind:value={c.grade} placeholder="Класс" />
+							<input type="number" bind:value={c.student_count} placeholder="Уч-ся" />
+							<select bind:value={c.subgroup_of}><option value={null}>— целый класс —</option>{#each classes as x}<option value={x.id}>{x.name} (подгруппа)</option>{/each}</select>
+							<button class="primary" on:click={addClass}>+</button>
+						</div>
+						<ul class="list">{#each classes as x}<li>{x.name} <span class="muted">— {x.student_count} чел.</span>{x.subgroup_of ? " · подгруппа" : ""}</li>{/each}</ul>
+					</section>
+
+					<section class="card">
+						<div class="card-head">
+							<h2>Кабинеты</h2>
+							<div class="csvbar">
+								<button class="mini" on:click={() => downloadRefsCSV('rooms')}>⬇ CSV</button>
+								<label class="mini file">⬆<input type="file" accept=".csv" on:change={(e) => importRefsCSV('rooms', e)} /></label>
+							</div>
+						</div>
+						<div class="row">
+							<input bind:value={r.name} placeholder="301" />
+							<input type="number" bind:value={r.capacity} placeholder="Мест" />
+							<input bind:value={r.room_type} placeholder="Тип" />
+							<button class="primary" on:click={addRoom}>+</button>
+						</div>
+						<ul class="list">{#each rooms as x}<li>{x.name} <span class="muted">— {x.capacity} мест</span></li>{/each}</ul>
+					</section>
+				</div>
+			{:else if tab === "lessons"}
+				<section class="card">
+					<div class="card-head">
+						<h2>Учебный план (уроки)</h2>
+						<div class="csvbar">
+							<button class="mini" on:click={() => downloadRefsCSV('lessons')}>⬇ CSV</button>
+							<label class="mini file">⬆<input type="file" accept=".csv" on:change={(e) => importRefsCSV('lessons', e)} /></label>
+						</div>
 					</div>
-				{/if}
-			</section>
-		{/if}
-	</main>
+					<div class="lesson-form">
+						<select bind:value={l.class_id}><option value={0}>Класс</option>{#each classes as x}<option value={x.id}>{x.name}</option>{/each}</select>
+						<select bind:value={l.subject_id}><option value={0}>Предмет</option>{#each subjects as x}<option value={x.id}>{x.name}</option>{/each}</select>
+						<select bind:value={l.teacher_id}><option value={0}>Учитель</option>{#each teachers as x}<option value={x.id}>{x.name}</option>{/each}</select>
+						<input type="number" bind:value={l.hours_per_week} placeholder="Часов/нед" />
+						<input type="number" bind:value={l.min_gap_days} placeholder="Мин. дней между" />
+						<label class="chk"><input type="checkbox" bind:checked={l.can_split} /> делить</label>
+						<button class="primary" on:click={addLesson}>+ Добавить урок</button>
+					</div>
+					<table class="data">
+						<thead><tr><th>Класс</th><th>Предмет</th><th>Учитель</th><th>Ч/нед</th><th></th></tr></thead>
+						<tbody>
+							{#each lessons as x}
+								<tr>
+									<td>{className(classes, x.class_id)}</td>
+									<td>{subjName(subjects, x.subject_id)}</td>
+									<td>{teachName(teachers, x.teacher_id)}</td>
+									<td>{x.hours_per_week}</td>
+									<td class="act"><button class="danger sm" on:click={() => removeLesson(x.id)}>✕</button></td>
+								</tr>
+							{/each}
+						</tbody>
+					</table>
+				</section>
+			{:else if tab === "constraints"}
+				<section class="card">
+					<div class="card-head"><h2>Ограничения</h2></div>
+					<div class="lesson-form">
+						<select bind:value={con.type}>
+							<option value="teacher_unavailable">Учитель недоступен</option>
+							<option value="class_unavailable">Класс недоступен</option>
+							<option value="room_unavailable">Кабинет недоступен</option>
+							<option value="max_consecutive">Макс. подряд (уроков)</option>
+							<option value="lunch_break">Обеденный перерыв</option>
+							<option value="max_lessons_per_day">Макс. уроков в день</option>
+							<option value="min_lessons_per_day">Мин. уроков в день</option>
+							<option value="prefer_morning">Желательно утро</option>
+							<option value="max_gaps">Макс. окон</option>
+						</select>
+						<select bind:value={con.entity_type}><option value="teacher">Учитель</option><option value="class">Класс</option><option value="room">Кабинет</option><option value="school">Школа</option></select>
+						{#if con.entity_type === "school"}
+							<span class="muted">вся школа</span>
+						{:else}
+							<select bind:value={con.entity_id}><option value={0}>Сущность</option>{#if con.entity_type==="teacher"}{#each teachers as x}<option value={x.id}>{x.name}</option>{/each}{:else if con.entity_type==="class"}{#each classes as x}<option value={x.id}>{x.name}</option>{/each}{:else if con.entity_type==="room"}{#each rooms as x}<option value={x.id}>{x.name}</option>{/each}{/if}</select>
+						{/if}
+						<input type="number" bind:value={con.day_of_week} placeholder="День(0-5)" />
+						<input type="number" bind:value={con.timeslot_start} placeholder="Слот с" />
+						<input type="number" bind:value={con.timeslot_end} placeholder="Слот по" />
+						{#if ["max_consecutive","lunch_break","max_lessons_per_day","min_lessons_per_day"].includes(con.type)}
+							<input type="number" bind:value={con.weight} placeholder="Значение" />
+						{/if}
+						<label class="chk"><input type="checkbox" bind:checked={con.is_hard} /> жёсткое</label>
+						<button class="primary" on:click={addConstraint}>+ Добавить</button>
+					</div>
+					<ul class="list">{#each constraints as x}<li>{x.type} → {x.entity_type}#{x.entity_id} {x.is_hard ? "жёсткое" : "мягкое"}</li>{/each}</ul>
+				</section>
+			{:else if tab === "settings"}
+				<section class="card">
+					<div class="card-head"><h2>Настройки школы</h2></div>
+					<div class="row">
+						<label>Учебных дней: <input type="number" min="1" max="7" bind:value={days} /></label>
+						<label>Уроков в день: <input type="number" min="1" max="14" bind:value={slots} on:change={onSlotsChange} /></label>
+						<button class="primary" on:click={saveSettings}>Сохранить</button>
+						<span class="csvbar">
+							<button class="mini" on:click={() => downloadRefsCSV('periods')}>⬇ CSV звонков</button>
+							<label class="mini file">⬆<input type="file" accept=".csv" on:change={(e) => importRefsCSV('periods', e)} /></label>
+						</span>
+					</div>
+					<h3>Расписание звонков</h3>
+					<table class="data">
+						<thead><tr><th>Урок</th><th>Начало</th><th>Конец</th></tr></thead>
+						<tbody>
+							{#each Array(slots) as _, si}
+								<tr>
+									<td>П{si + 1}</td>
+									<td><input type="time" bind:value={bellPeriods[si].start} /></td>
+									<td><input type="time" bind:value={bellPeriods[si].end} /></td>
+								</tr>
+							{/each}
+						</tbody>
+					</table>
+					<p class="hint">Время отображается в шапке расписания и в PDF. Хранится в базе (SQLite).</p>
+				</section>
+			{:else if tab === "schedule"}
+				<section class="card">
+					<div class="gen-bar">
+						<label>Дней: <input class="num" type="number" bind:value={days} /></label>
+						<label>Слотов: <input class="num" type="number" bind:value={slots} /></label>
+						<button class="primary" on:click={generate}>⚙ Сгенерировать</button>
+						<button on:click={undo}>↶ Отменить</button>
+						<label class="chk"><input type="checkbox" bind:checked={usePrecise} /> точный CP-SAT (OR-Tools)</label>
+						<span class="sep" />
+						<label>Вид:
+							<select bind:value={viewMode}>
+								<option value="class">по классам</option>
+								<option value="teacher">по учителям</option>
+								<option value="room">по кабинетам</option>
+							</select>
+						</label>
+						<label class="chk"><input type="checkbox" bind:checked={compact} /> компактный</label>
+						{#if viewMode === "class" && rows.length > classesPerPage}
+							<span class="pager">
+								<button class="sm" on:click={() => classPage = Math.max(0, classPage - 1)} disabled={classPage === 0}>‹</button>
+								<span>{classPage + 1}/{totalClassPages}</span>
+								<button class="sm" on:click={() => classPage = Math.min(totalClassPages - 1, classPage + 1)} disabled={classPage >= totalClassPages - 1}>›</button>
+							</span>
+						{/if}
+						<span class="sep" />
+						<label>Экспорт:
+							<select bind:value={exportMode}>
+								<option value="school">вся школа (плакат)</option>
+								<option value="class">по классам (отд. стр.)</option>
+								<option value="teacher">по учителям</option>
+								<option value="room">по кабинетам</option>
+							</select>
+						</label>
+						<label>Стр.:
+							<select bind:value={pageSize}>
+								<option value="A0">A0</option><option value="A1">A1</option><option value="A2">A2</option><option value="A3">A3</option><option value="A4">A4</option>
+							</select>
+						</label>
+						<label>Ориент.:
+							<select bind:value={orientation}>
+								<option value="landscape">альбомн.</option>
+								<option value="portrait">книжн.</option>
+							</select>
+						</label>
+						<label class="chk"><input type="checkbox" bind:checked={pdfShowTeacher} /> учителя</label>
+						<label class="chk"><input type="checkbox" bind:checked={pdfShowRoom} /> кабинеты</label>
+						<label class="chk"><input type="checkbox" bind:checked={pdfWeekdaysOnly} /> будни</label>
+						<label class="chk"><input type="checkbox" bind:checked={pdfBW} /> ч/б</label>
+						<button on:click={exportPDF}>⬇ PDF</button>
+						<button on:click={exportCSV}>⬇ CSV</button>
+						<button on:click={exportJSON}>⬇ JSON</button>
+						<label class="file">⬆ JSON<input type="file" accept="application/json" on:change={importJSON} /></label>
+					</div>
+					{#if genResult}<p class="status">Размещено <b>{genResult.placed}/{genResult.total}</b> · мягких нарушений: <b>{genResult.violations}</b></p>{/if}
+					<p class="hint">Перетащите урок в другую ячейку, чтобы отредактировать вручную.</p>
+					{#if schedule.length === 0}
+						<p class="empty">Расписание пусто. Добавьте уроки и нажмите «Сгенерировать».</p>
+					{:else}
+						<div class="grid-scroll">
+							{#each visibleRows as row}
+								<div class="class-block" class:compact>
+									<h3>{row.label}</h3>
+									<table class:compact>
+										<thead><tr><th>День</th>{#each Array(slots) as _, si}<th>П{si + 1}{periodLabel(si) ? " " + periodLabel(si) : ""}</th>{/each}</tr></thead>
+										<tbody>
+											{#each Array(days) as _, di}
+												<tr><td class="day">{dayName(di)}</td>{#each Array(slots) as _, si}{@const cell = cellAt(viewMode, row.id, di, si)}<td
+													class:filled={!!cell}
+													class:conflict={!!cell && cell.conflict}
+													style={cell ? 'background:' + subjectColor(cell.subject_id) : ''}
+													draggable={viewMode === "class" && !!cell}
+													on:dragstart={(e) => cell && e.dataTransfer.setData("text/plain", String(cell.id))}
+													on:dragover={(e) => e.preventDefault()}
+													on:drop={viewMode === "class" ? (e) => onDrop(e, row.id, di, si) : null}>{cell ? cell.label : ""}</td>{/each}</tr>
+											{/each}
+										</tbody>
+									</table>
+								</div>
+							{/each}
+						</div>
+					{/if}
+				</section>
+			{/if}
+		</main>
+	</div>
 </div>
 
 <style>
-	.app { font-family: system-ui, sans-serif; color: #e2e8f0; background: #0f172a; min-height: 100vh; }
-	header { display: flex; align-items: center; gap: 16px; padding: 12px 20px; background: #1e293b; flex-wrap: wrap; }
-	h1 { font-size: 20px; margin: 0; }
-	.school-bar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-	input, select { background: #0f172a; color: #e2e8f0; border: 1px solid #475569; border-radius: 6px; padding: 6px 8px; }
-	button { background: #334155; color: #e2e8f0; border: none; border-radius: 6px; padding: 6px 12px; cursor: pointer; }
-	button:hover { background: #475569; }
-	button.primary { background: #2563eb; }
-	button.primary:hover { background: #1d4ed8; }
-	nav { display: flex; gap: 4px; padding: 0 20px; background: #111827; }
-	nav button { border-radius: 0; background: transparent; border-bottom: 2px solid transparent; }
-	nav button.active { border-bottom-color: #2563eb; color: #fff; }
-	.toast { background: #16a34a; color: #fff; padding: 6px 12px; border-radius: 6px; }
-	main { padding: 20px; }
-	.grid3 { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; }
-	.row { display: flex; gap: 6px; margin-bottom: 8px; flex-wrap: wrap; }
-	ul { list-style: none; padding: 0; }
-	li { padding: 4px 0; border-bottom: 1px solid #1e293b; }
-	.lesson-form { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 12px; align-items: center; }
-	table { border-collapse: collapse; width: 100%; margin-top: 8px; }
-	th, td { border: 1px solid #334155; padding: 6px; text-align: left; font-size: 13px; }
+	:global(body) { margin: 0; }
+	.app {
+		display: flex;
+		min-height: 100vh;
+		font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
+		color: #1e293b;
+		background: #f1f5f9;
+	}
+	.sidebar {
+		width: 232px;
+		flex: 0 0 232px;
+		background: #ffffff;
+		border-right: 1px solid #e2e8f0;
+		display: flex;
+		flex-direction: column;
+		padding: 18px 14px;
+		position: sticky;
+		top: 0;
+		height: 100vh;
+		box-sizing: border-box;
+	}
+	.brand { font-size: 20px; font-weight: 700; color: #4f46e5; padding: 4px 8px 18px; }
+	.brand span { color: #0f172a; }
+	.nav { display: flex; flex-direction: column; gap: 4px; }
+	.nav button {
+		display: flex; align-items: center; gap: 10px;
+		text-align: left;
+		background: transparent; border: none; border-radius: 10px;
+		padding: 10px 12px; color: #475569; font-size: 14px; cursor: pointer;
+	}
+	.nav button:hover { background: #f1f5f9; color: #0f172a; }
+	.nav button.active { background: #eef2ff; color: #4f46e5; font-weight: 600; }
+	.nav .ico { font-size: 16px; width: 20px; text-align: center; }
+	.side-foot { margin-top: auto; display: flex; flex-direction: column; gap: 8px; padding-top: 16px; }
+	.side-foot .ghost {
+		background: #f8fafc; border: 1px dashed #cbd5e1; color: #475569;
+		border-radius: 10px; padding: 8px 10px; cursor: pointer; font-size: 13px;
+	}
+	.side-foot .ghost:hover { border-color: #4f46e5; color: #4f46e5; }
+
+	.content { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+	.topbar {
+		display: flex; align-items: center; gap: 14px;
+		padding: 14px 24px; background: #ffffff; border-bottom: 1px solid #e2e8f0;
+		position: sticky; top: 0; z-index: 5;
+	}
+	.school { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+	.school select { min-width: 160px; }
+	.school-new { width: 150px; }
+	main { padding: 24px; }
+
+	input, select {
+		background: #fff; color: #1e293b; border: 1px solid #cbd5e1;
+		border-radius: 8px; padding: 7px 10px; font-size: 13px; outline: none;
+	}
+	input:focus, select:focus { border-color: #4f46e5; box-shadow: 0 0 0 3px #e0e7ff; }
+	button {
+		background: #e2e8f0; color: #1e293b; border: none; border-radius: 8px;
+		padding: 8px 14px; cursor: pointer; font-size: 13px; font-weight: 500;
+	}
+	button:hover { background: #cbd5e1; }
+	button.primary { background: #4f46e5; color: #fff; }
+	button.primary:hover { background: #4338ca; }
+	button.sm { padding: 5px 10px; font-size: 12px; }
+	button.danger { background: #fee2e2; color: #b91c1c; }
+	button.danger:hover { background: #fecaca; }
+	button.mini { padding: 4px 8px; font-size: 12px; background: #f1f5f9; }
+	button.mini:hover { background: #e2e8f0; }
+	.chk { display: inline-flex; align-items: center; gap: 5px; font-size: 13px; color: #475569; }
+	.chk input { width: auto; }
+	.row { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; align-items: center; }
+
+	.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 18px; }
+	.card {
+		background: #fff; border: 1px solid #e2e8f0; border-radius: 14px;
+		padding: 18px; box-shadow: 0 1px 2px rgba(15,23,42,0.04);
+	}
+	.card-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+	.card-head h2 { margin: 0; font-size: 16px; color: #0f172a; }
+	h3 { font-size: 14px; color: #334155; margin: 16px 0 8px; }
+
+	.csvbar { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; }
+	.file { background: #f1f5f9; padding: 4px 8px; border-radius: 8px; cursor: pointer; }
+	.file:hover { background: #e2e8f0; }
+	.file input { display: none; }
+
+	.list { list-style: none; padding: 0; margin: 0; max-height: 220px; overflow: auto; }
+	.list li { padding: 6px 8px; border-bottom: 1px solid #f1f5f9; font-size: 13px; }
+	.list li:last-child { border-bottom: none; }
+	.muted { color: #94a3b8; }
+
+	table.data { border-collapse: collapse; width: 100%; margin-top: 8px; }
+	table.data th, table.data td { border-bottom: 1px solid #e2e8f0; padding: 8px 10px; text-align: left; font-size: 13px; }
+	table.data thead th { background: #f8fafc; color: #64748b; font-weight: 600; font-size: 12px; }
+	table.data tbody tr:hover { background: #f8fafc; }
+	table.data td.act { width: 1%; white-space: nowrap; }
+
 	.gen-bar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
 	.gen-bar .sep { flex-basis: 100%; height: 0; }
-	.gen-bar .chk { display: inline-flex; align-items: center; gap: 4px; }
+	.gen-bar .num { width: 56px; }
 	.pager { display: inline-flex; align-items: center; gap: 6px; }
-	.pager button { padding: 2px 8px; }
-	table.compact th, table.compact td { padding: 1px 3px; font-size: 9px; }
-	.class-block.compact h3 { font-size: 11px; margin: 0 0 2px; }
-	.class-block.compact { margin-bottom: 8px; }
-	.status { background: #1e293b; padding: 8px 12px; border-radius: 6px; }
-	.empty { color: #94a3b8; }
-	.hint { color: #94a3b8; font-size: 12px; margin: 4px 0 12px; }
-	td.filled { background: #1e3a8a; cursor: grab; }
-	td.filled:active { cursor: grabbing; }
-	td.filled.conflict { background: #b91c1c; }
+	.status { background: #ecfdf5; border: 1px solid #a7f3d0; color: #065f46; padding: 8px 12px; border-radius: 10px; font-size: 13px; }
+	.hint { color: #94a3b8; font-size: 12px; margin: 6px 0 14px; }
+	.empty { color: #94a3b8; padding: 24px; text-align: center; background: #f8fafc; border-radius: 10px; }
 	.grid-scroll { overflow-x: auto; }
-	.class-block { margin-bottom: 20px; }
-	.class-block h3 { margin: 0 0 6px; }
-	.day { font-weight: 600; background: #1e293b; }
-	.file { background: #334155; padding: 6px 12px; border-radius: 6px; cursor: pointer; }
-	.file input { display: none; }
-	.csvbar { font-size: 11px; font-weight: normal; }
-	.csvbar button { padding: 2px 6px; margin-left: 4px; }
+	.class-block { margin-bottom: 22px; min-width: 520px; }
+	.class-block h3 { margin: 0 0 8px; font-size: 14px; color: #0f172a; }
+	.class-block table { border-collapse: collapse; width: 100%; }
+	.class-block th, .class-block td { border: 1px solid #e2e8f0; padding: 6px 8px; text-align: center; font-size: 12px; height: 38px; }
+	.class-block th { background: #f8fafc; color: #64748b; font-weight: 600; }
+	.class-block td.day { background: #f1f5f9; font-weight: 600; white-space: nowrap; }
+	td.filled { cursor: grab; border-radius: 4px; font-weight: 500; }
+	td.filled:active { cursor: grabbing; }
+	td.filled.conflict { background: #b91c1c !important; color: #fff; }
+	.class-block table.compact th, .class-block table.compact td { padding: 1px 3px; font-size: 9px; height: 22px; }
+	.class-block.compact h3 { font-size: 11px; margin: 0 0 4px; }
+
+	.toast { background: #16a34a; color: #fff; padding: 8px 14px; border-radius: 10px; font-size: 13px; margin-left: auto; }
 </style>
