@@ -129,6 +129,46 @@
 		conflictIDs = ids;
 	}
 
+	let report = { conflicts: [], unplaced: [], overloads: [] };
+	function computeConflictReport() {
+		const byKey = { teacher_id: {}, class_id: {}, room_id: {} };
+		for (const e of schedule) {
+			const key = e.day_of_week * 1000 + e.timeslot;
+			for (const f of ["teacher_id", "class_id", "room_id"]) {
+				(byKey[f][key] = byKey[f][key] || []).push(e);
+			}
+		}
+		const labels = { teacher_id: "Учитель", class_id: "Класс", room_id: "Кабинет" };
+		const conflicts = [];
+		for (const f of ["teacher_id", "class_id", "room_id"]) {
+			for (const key in byKey[f]) {
+				const arr = byKey[f][key];
+				if (arr.length > 1) {
+					const day = Math.floor(key / 1000), slot = key % 1000;
+					conflicts.push({
+						type: labels[f], day, slot,
+						items: arr.map((e) => ({
+							subject: subjName(subjects, e.subject_id),
+							who: f === "teacher_id" ? teachName(teachers, e.teacher_id)
+								: f === "class_id" ? className(classes, e.class_id)
+								: (rooms.find((r) => r.id === e.room_id)?.name || "?")
+						}))
+					});
+				}
+			}
+		}
+		const placedByLesson = {};
+		for (const e of schedule) placedByLesson[e.lesson_id] = (placedByLesson[e.lesson_id] || 0) + 1;
+		const unplaced = lessons.filter((l) => (placedByLesson[l.id] || 0) < (l.hours_per_week || 0))
+			.map((l) => ({ subject: subjName(subjects, l.subject_id), cls: className(classes, l.class_id), need: l.hours_per_week, got: placedByLesson[l.id] || 0 }));
+		const teacherHours = {};
+		for (const e of schedule) teacherHours[e.teacher_id] = (teacherHours[e.teacher_id] || 0) + 1;
+		const overloads = teachers.filter((t) => t.max_hours_per_week && (teacherHours[t.id] || 0) > t.max_hours_per_week)
+			.map((t) => ({ name: t.name, max: t.max_hours_per_week, got: teacherHours[t.id] || 0 }));
+		return { conflicts, unplaced, overloads };
+	}
+	$: report = computeConflictReport();
+
 	let history = [];
 	async function pushHistory() {
 		history.push(JSON.parse(JSON.stringify(schedule)));
@@ -904,6 +944,26 @@
 							{/each}
 						</div>
 						{#if ghost}<div class="drag-ghost" style="left:{ghost.x}px; top:{ghost.y}px;">{ghost.label}</div>{/if}
+						{#if report.conflicts.length || report.unplaced.length || report.overloads.length}
+							<div class="report">
+								<h3>Отчёт по конфликтам</h3>
+								{#if report.conflicts.length}
+									<div class="rep-sec"><b>Накладки ({report.conflicts.length}):</b>
+										<ul>{#each report.conflicts as c}<li>{dayName(c.day)} П{c.slot + 1}: {c.type} — {#each c.items as it, i}{it.subject} ({it.who}){#if i < c.items.length - 1}, {/if}{/each}</li>{/each}</ul>
+									</div>
+								{/if}
+								{#if report.unplaced.length}
+									<div class="rep-sec"><b>Не расставлено уроков ({report.unplaced.length}):</b>
+										<ul>{#each report.unplaced as u}<li>{u.subject} · {u.cls} — нужно {u.need}ч, расставлено {u.got}ч</li>{/each}</ul>
+									</div>
+								{/if}
+								{#if report.overloads.length}
+									<div class="rep-sec"><b>Перегрузки учителей ({report.overloads.length}):</b>
+										<ul>{#each report.overloads as o}<li>{o.name} — {o.got}ч при лимите {o.max}ч</li>{/each}</ul>
+									</div>
+								{/if}
+							</div>
+						{/if}
 					{/if}
 				</section>
 			{/if}
@@ -1034,4 +1094,9 @@
 	.class-block.compact h3 { font-size: 11px; margin: 0 0 4px; }
 
 	.toast { background: #16a34a; color: #fff; padding: 8px 14px; border-radius: 10px; font-size: 13px; margin-left: auto; }
+	.report { margin-top: 14px; border: 1px solid #fecaca; background: #fef2f2; border-radius: 10px; padding: 10px 14px; font-size: 13px; }
+	.report h3 { margin: 0 0 6px; font-size: 13px; color: #b91c1c; }
+	.rep-sec { margin: 6px 0; }
+	.rep-sec ul { margin: 4px 0 0; padding-left: 18px; }
+	.rep-sec li { margin: 2px 0; }
 </style>
