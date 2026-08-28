@@ -197,25 +197,61 @@
 		await MoveEntry(id, day, slot);
 		await reloadSchedule();
 	}
-	async function onDrop(e, kind, id, day, slot) {
-		e.preventDefault();
-		const did = parseInt(e.dataTransfer.getData("text/plain"));
-		if (!did) return;
-		await applyMove(did, kind, id, day, slot);
-	}
 	let selectedEntry = null;
-	async function onCellClick(e, cell, kind, rowId, day, slot) {
-		if (!cell) {
-			if (selectedEntry) { await applyMove(selectedEntry.id, kind, rowId, day, slot); selectedEntry = null; }
-			return;
-		}
-		if (selectedEntry && selectedEntry.id !== cell.id) {
-			await applyMove(selectedEntry.id, kind, rowId, day, slot);
-			selectedEntry = null;
-			return;
-		}
-		selectedEntry = (selectedEntry && selectedEntry.id === cell.id) ? null : { id: cell.id };
+	let pendingDrag = null;
+	let startPos = null;
+	let dragId = null;
+	let ghost = null;
+
+	function onPointerDown(e, cell, kind, rowId, day, slot) {
+		if (e.button !== 0) return;
+		if (e.target && e.target.closest && e.target.closest(".cell-x")) return;
+		startPos = { x: e.clientX, y: e.clientY };
+		pendingDrag = { id: cell ? cell.id : null, kind, rowId, day, slot, label: cell ? cell.label : "" };
+		try { e.currentTarget.setPointerCapture(e.pointerId); } catch (_) {}
 	}
+	function onPointerMove(e) {
+		if (!pendingDrag || !startPos) return;
+		const dx = e.clientX - startPos.x, dy = e.clientY - startPos.y;
+		if (!dragId && Math.hypot(dx, dy) > 6) {
+			dragId = pendingDrag.id;
+			ghost = { label: pendingDrag.label, x: e.clientX, y: e.clientY };
+		}
+		if (dragId) ghost = { label: ghost.label, x: e.clientX, y: e.clientY };
+	}
+	async function onPointerUp(e) {
+		if (!pendingDrag) { dragId = null; ghost = null; return; }
+		const pd = pendingDrag;
+		pendingDrag = null;
+		const wasDrag = !!dragId;
+		dragId = null; ghost = null;
+		if (wasDrag) {
+			const el = document.elementFromPoint(e.clientX, e.clientY);
+			const td = el && el.closest ? el.closest("[data-cell]") : null;
+			if (td) {
+				const day = parseInt(td.getAttribute("data-day"));
+				const slot = parseInt(td.getAttribute("data-slot"));
+				const rowId = parseInt(td.getAttribute("data-row"));
+				const kind = td.getAttribute("data-kind");
+				if (!isNaN(day) && !isNaN(slot) && !isNaN(rowId) && (day !== pd.day || slot !== pd.slot)) {
+					await applyMove(pd.id, kind, rowId, day, slot);
+				}
+			}
+			return;
+		}
+		// click without drag -> select / move
+		if (!pd.id) {
+			if (selectedEntry) { await applyMove(selectedEntry.id, pd.kind, pd.rowId, pd.day, pd.slot); selectedEntry = null; }
+			return;
+		}
+		if (selectedEntry && selectedEntry.id !== pd.id) {
+			await applyMove(selectedEntry.id, pd.kind, pd.rowId, pd.day, pd.slot);
+			selectedEntry = null;
+		} else {
+			selectedEntry = (selectedEntry && selectedEntry.id === pd.id) ? null : { id: pd.id };
+		}
+	}
+	function onPointerCancel() { pendingDrag = null; dragId = null; ghost = null; startPos = null; }
 	function cellAt(kind, id, day, slot) {
 		const e = schedule.find((en) => {
 			let match;
@@ -554,6 +590,8 @@
 	loadSchools();
 </script>
 
+<svelte:window on:pointermove={onPointerMove} on:pointerup={onPointerUp} on:pointercancel={onPointerCancel} />
+
 <div class="app">
 	<aside class="sidebar">
 		<div class="brand">📅 <span>Timetable</span></div>
@@ -801,7 +839,7 @@
 						<label class="file">⬆ JSON<input type="file" accept="application/json" on:change={importJSON} /></label>
 					</div>
 					{#if genResult}<p class="status">Размещено <b>{genResult.placed}/{genResult.total}</b> · мягких нарушений: <b>{genResult.violations}</b></p>{/if}
-					<p class="hint">Чтобы переместить урок: перетащите ячейку в другую (drag&drop) либо кликните урок, затем кликните целевую ячейку. Повторный клик по выделенному снимает выделение.</p>
+					<p class="hint">Чтобы переместить урок: зажмите и перетащите ячейку в другую (drag) либо кликните урок, затем кликните целевую ячейку. Повторный клик по выделенному снимает выделение. ✕ в ячейке — удалить.</p>
 					{#if schedule.length === 0}
 						<p class="empty">Расписание пусто. Добавьте уроки и нажмите «Сгенерировать».</p>
 					{:else}
@@ -817,18 +855,20 @@
 													class:filled={!!cell}
 													class:conflict={!!cell && cell.conflict}
 													style={cell ? 'background:' + subjectColor(cell.subject_id) : ''}
-													draggable={!!cell}
 													class:selected={selectedEntry && cell && selectedEntry.id === cell.id}
-													on:dragstart={(e) => { if (!cell) return; e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("text/plain", String(cell.id)); }}
-													on:dragover={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = "move"; }}
-													on:drop={(e) => onDrop(e, viewMode, row.id, di, si)}
-													on:click={(e) => onCellClick(e, cell, viewMode, row.id, di, si)}>{#if cell}{cell.label}<button class="cell-x" title="Удалить" on:click={(e) => { e.stopPropagation(); removeEntry(cell.id); }}>✕</button>{:else}{/if}</td>{/each}</tr>
+													data-cell
+													data-day={di}
+													data-slot={si}
+													data-row={row.id}
+													data-kind={viewMode}
+													on:pointerdown={(e) => onPointerDown(e, cell, viewMode, row.id, di, si)}>{#if cell}{cell.label}<button class="cell-x" title="Удалить" on:click={(e) => { e.stopPropagation(); removeEntry(cell.id); }}>✕</button>{:else}{/if}</td>{/each}</tr>
 											{/each}
 										</tbody>
 									</table>
 								</div>
 							{/each}
 						</div>
+						{#if ghost}<div class="drag-ghost" style="left:{ghost.x}px; top:{ghost.y}px;">{ghost.label}</div>{/if}
 					{/if}
 				</section>
 			{/if}
@@ -954,6 +994,7 @@
 	.cell-x { position: absolute; top: 1px; right: 1px; border: none; background: rgba(0,0,0,0.18); color: #fff; width: 16px; height: 16px; line-height: 14px; border-radius: 4px; cursor: pointer; font-size: 10px; padding: 0; }
 	td.filled { position: relative; }
 	td.filled.selected { outline: 3px solid #1d4ed8; outline-offset: -2px; }
+	.drag-ghost { position: fixed; z-index: 9999; pointer-events: none; transform: translate(-50%, -50%); background: #1d4ed8; color: #fff; padding: 2px 8px; border-radius: 6px; font-size: 12px; max-width: 200px; box-shadow: 0 4px 14px rgba(0,0,0,0.3); }
 	.class-block table.compact th, .class-block table.compact td { padding: 1px 3px; font-size: 9px; height: 22px; }
 	.class-block.compact h3 { font-size: 11px; margin: 0 0 4px; }
 
