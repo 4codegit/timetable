@@ -7,6 +7,7 @@
 		CreateConstraint, ListConstraints,
 		Generate, GeneratePrecise, MoveEntry, ReplaceSchedule, ListSchedule, ExportAll, ImportAll, ScheduleCSV, ExportRefsCSV, ImportRefsCSV, GetSchoolSettings, UpdateSchoolSettings
 	} from "../wailsjs/go/main/App";
+	import { jsPDF } from "jspdf";
 
 	let schools = [];
 	let activeSchoolID = 0;
@@ -174,18 +175,24 @@
 		await reloadSchedule();
 		flash(`CP-SAT: размещено ${genResult.placed}/${genResult.total}`);
 	}
-	async function onDrop(e, classID, day, slot) {
+	async function onDrop(e, kind, id, day, slot) {
 		e.preventDefault();
-		const id = parseInt(e.dataTransfer.getData("text/plain"));
-		if (!id) return;
-		const src = schedule.find(en => en.id === id);
+		const did = parseInt(e.dataTransfer.getData("text/plain"));
+		if (!did) return;
+		const src = schedule.find(en => en.id === did);
 		if (!src) return;
 		await pushHistory();
-		const target = schedule.find(en => en.class_id === classID && en.day_of_week === day && en.timeslot === slot);
-		if (target && target.id !== id) {
+		const target = schedule.find(en => {
+			if (en.id === did) return false;
+			if (en.day_of_week !== day || en.timeslot !== slot) return false;
+			if (kind === "class") return en.class_id === id;
+			if (kind === "teacher") return en.teacher_id === id;
+			return en.room_id === id;
+		});
+		if (target && target.id !== did) {
 			await MoveEntry(target.id, src.day_of_week, src.timeslot);
 		}
-		await MoveEntry(id, day, slot);
+		await MoveEntry(did, day, slot);
 		await reloadSchedule();
 	}
 	function cellAt(kind, id, day, slot) {
@@ -222,23 +229,83 @@
 		const csv = await ScheduleCSV(activeSchoolID, days, slots);
 		download(csv, "schedule.csv", "text/csv");
 	}
+	function hexToRgb(hex) {
+		const h = String(hex).replace("#", "");
+		const full = h.length === 3 ? h.split("").map(c => c + c).join("") : h;
+		const n = parseInt(full, 16);
+		return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+	}
+
 	async function exportPDF() {
-		const html = buildExportHTML();
-		const iframe = document.createElement("iframe");
-		iframe.style.position = "fixed";
-		iframe.style.width = "0";
-		iframe.style.height = "0";
-		iframe.style.border = "0";
-		document.body.appendChild(iframe);
-		const doc = iframe.contentWindow.document;
-		doc.open();
-		doc.write(html);
-		doc.close();
-		iframe.contentWindow.focus();
-		iframe.contentWindow.print();
-		setTimeout(() => {
-			if (iframe.parentNode) iframe.parentNode.removeChild(iframe);
-		}, 1500);
+		const kind = exportMode === "school" ? "class" : exportMode;
+		const list = entityRows(kind);
+		const daysN = pdfWeekdaysOnly ? Math.min(days, 5) : days;
+		const land = orientation === "landscape";
+		const doc = new jsPDF({ orientation: land ? "landscape" : "portrait", unit: "mm", format: pageSize.toLowerCase() });
+		const pageW = doc.internal.pageSize.getWidth();
+		const pageH = doc.internal.pageSize.getHeight();
+		const margin = 8;
+		const labelW = 22;
+		const gridX = margin + labelW;
+		const topY = margin + 10;
+		const legendH = exportMode === "school" ? 16 : 0;
+		const gridW = pageW - gridX - margin;
+		const gridH = pageH - topY - margin - legendH;
+		const colW = gridW / slots;
+		const rowH = gridH / daysN;
+		let first = true;
+		for (const row of list) {
+			if (!first) doc.addPage(pageSize.toLowerCase(), land ? "landscape" : "portrait");
+			first = false;
+			doc.setFontSize(13);
+			doc.setTextColor(20, 20, 20);
+			doc.text(escapeHtml(row.label), margin, margin + 4);
+			doc.setFontSize(8);
+			for (let si = 0; si < slots; si++) {
+				const lbl = periodLabel(si);
+				doc.text("П" + (si + 1) + (lbl ? " " + lbl : ""), gridX + si * colW + 1, topY - 2);
+			}
+			for (let di = 0; di < daysN; di++) {
+				doc.text(dayName(di), margin, topY + (di + 0.5) * rowH + 2);
+				for (let si = 0; si < slots; si++) {
+					const cell = cellAt(kind, row.id, di, si);
+					const x = gridX + si * colW;
+					const y = topY + di * rowH;
+					if (cell) {
+						const bg = cell.conflict ? "#b91c1c" : (pdfBW ? "#e5e7eb" : subjectColor(cell.subject_id));
+						const [r, g, b] = hexToRgb(bg);
+						doc.setFillColor(r, g, b);
+						doc.rect(x, y, colW, rowH, "F");
+						doc.setTextColor(20, 20, 20);
+						doc.setFontSize(7);
+						const txt = pdfShowTeacher
+							? subjName(subjects, cell.subject_id) + " (" + teachName(teachers, cell.teacher_id) + ")"
+							: subjName(subjects, cell.subject_id);
+						const lines = doc.splitTextToSize(txt, colW - 2);
+						doc.text(lines.slice(0, 3), x + 1, y + 4);
+					} else {
+						doc.setDrawColor(200);
+						doc.rect(x, y, colW, rowH);
+					}
+				}
+			}
+		}
+		if (exportMode === "school") {
+			let lx = margin, ly = pageH - margin - 4;
+			doc.setFontSize(8);
+			for (const s of subjects) {
+				if (!schedule.some(e => e.subject_id === s.id)) continue;
+				const [r, g, b] = hexToRgb(pdfBW ? "#e5e7eb" : subjectColor(s.id));
+				doc.setFillColor(r, g, b);
+				doc.rect(lx, ly - 3, 4, 4, "F");
+				doc.setTextColor(20, 20, 20);
+				doc.text(escapeHtml(s.name), lx + 5, ly);
+				lx += 7 + doc.getTextWidth(escapeHtml(s.name)) + 4;
+				if (lx > pageW - 30) { lx = margin; ly -= 5; }
+			}
+		}
+		const blob = doc.output("blob");
+		download(blob, "Расписание_" + fileSlug(pdfSchoolName()) + "_" + new Date().toISOString().slice(0, 10) + ".pdf", "application/pdf");
 	}
 	function entityRows(kind) {
 		if (kind === "teacher") return teachers.map((t) => ({ id: t.id, label: t.name }));
@@ -704,10 +771,10 @@
 													class:filled={!!cell}
 													class:conflict={!!cell && cell.conflict}
 													style={cell ? 'background:' + subjectColor(cell.subject_id) : ''}
-													draggable={viewMode === "class" && !!cell}
-													on:dragstart={(e) => cell && e.dataTransfer.setData("text/plain", String(cell.id))}
-													on:dragover={(e) => e.preventDefault()}
-													on:drop={viewMode === "class" ? (e) => onDrop(e, row.id, di, si) : null}>{cell ? cell.label : ""}</td>{/each}</tr>
+													draggable={!!cell}
+													on:dragstart={(e) => { if (!cell) return; e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("text/plain", String(cell.id)); }}
+													on:dragover={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = "move"; }}
+													on:drop={(e) => onDrop(e, viewMode, row.id, di, si)}>{cell ? cell.label : ""}</td>{/each}</tr>
 											{/each}
 										</tbody>
 									</table>
@@ -830,7 +897,7 @@
 	.class-block { margin-bottom: 22px; min-width: 520px; }
 	.class-block h3 { margin: 0 0 8px; font-size: 14px; color: #0f172a; }
 	.class-block table { border-collapse: collapse; width: 100%; }
-	.class-block th, .class-block td { border: 1px solid #e2e8f0; padding: 6px 8px; text-align: center; font-size: 12px; height: 38px; }
+	.class-block th, .class-block td { border: 1px solid #e2e8f0; padding: 6px 8px; text-align: center; font-size: 12px; height: 38px; user-select: none; -webkit-user-select: none; }
 	.class-block th { background: #f8fafc; color: #64748b; font-weight: 600; }
 	.class-block td.day { background: #f1f5f9; font-weight: 600; white-space: nowrap; }
 	td.filled { cursor: grab; border-radius: 4px; font-weight: 500; }
