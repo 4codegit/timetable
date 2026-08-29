@@ -68,6 +68,8 @@ export function MoveEntry(arg1:number,arg2:number,arg3:number):Promise<void>;
 
 export function ReplaceSchedule(arg1:number,arg2:Array<domain.ScheduleEntry>):Promise<void>;
 
+export function SaveExport(arg1:string,arg2:string):Promise<string>;
+
 export function SaveFile(arg1:string,arg2:string):Promise<void>;
 
 export function SaveFileWithDialog(arg1:string):Promise<string>;

@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
@@ -149,6 +150,34 @@ func (a *App) SaveFileWithDialog(defaultName string) (string, error) {
 		DefaultFilename:   defaultName,
 		CanCreateDirectories: true,
 	})
+}
+
+// SaveExport writes a base64 payload (e.g. a generated PDF/CSV) directly into
+// the user's Downloads folder under the given filename. This avoids the native
+// GTK/xdg-desktop-portal save dialog, which is unreliable inside an AppImage on
+// Wayland. Returns the absolute path the file was written to.
+func (a *App) SaveExport(filename string, b64 string) (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		home = "."
+	}
+	dir := filepath.Join(home, "Downloads")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		dir = home
+	}
+	name := filepath.Base(strings.TrimSpace(filename))
+	if name == "" || name == "." || name == string(os.PathSeparator) {
+		name = "export"
+	}
+	data, err := base64.StdEncoding.DecodeString(b64)
+	if err != nil {
+		return "", err
+	}
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		return "", err
+	}
+	return path, nil
 }
 
 // ---- Constraints ----

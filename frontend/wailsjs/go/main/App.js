@@ -130,6 +130,10 @@ export function ReplaceSchedule(arg1, arg2) {
   return window['go']['main']['App']['ReplaceSchedule'](arg1, arg2);
 }
 
+export function SaveExport(arg1, arg2) {
+  return window['go']['main']['App']['SaveExport'](arg1, arg2);
+}
+
 export function SaveFile(arg1, arg2) {
   return window['go']['main']['App']['SaveFile'](arg1, arg2);
 }

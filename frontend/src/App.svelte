@@ -5,15 +5,17 @@
 		CreateClass, ListClasses, CreateRoom, ListRooms,
 		CreateLesson, ListLessons, DeleteLesson, UpdateLesson,
 		CreateConstraint, ListConstraints, DeleteConstraint,
-		DeleteTeacher, DeleteSubject, DeleteClass, DeleteRoom, DeleteScheduleEntry, SaveFile, SaveFileWithDialog,
+		DeleteTeacher, DeleteSubject, DeleteClass, DeleteRoom, DeleteScheduleEntry, SaveExport,
 		Generate, GeneratePrecise, MoveEntry, ReplaceSchedule, ListSchedule, ExportAll, ImportAll, ScheduleCSV, ExportRefsCSV, ImportRefsCSV, GetSchoolSettings, UpdateSchoolSettings
 	} from "../wailsjs/go/main/App";
 	import { jsPDF } from "jspdf";
+	import { onMount } from "svelte";
 
 	let schools = [];
 	let activeSchoolID = 0;
 	let newSchoolName = "Моя школа";
 	let tab = "refs";
+	const APP_VERSION = "1.6.13";
 	let msg = "";
 
 	let teachers = [], subjects = [], classes = [], rooms = [], lessons = [], constraints = [], schedule = [];
@@ -265,12 +267,23 @@
 	let dragId = null;
 	let ghost = null;
 
+	// Engine-independent hit-test: find the schedule cell whose bounding rect
+	// contains the pointer. Avoids elementFromPoint, which is unreliable inside
+	// the Wails WebKit webview (especially during pointer capture).
+	function hitCell(x, y) {
+		const tds = document.querySelectorAll("td[data-cell]");
+		for (let i = 0; i < tds.length; i++) {
+			const r = tds[i].getBoundingClientRect();
+			if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) return tds[i];
+		}
+		return null;
+	}
+
 	function onPointerDown(e, cell, kind, rowId, day, slot) {
 		if (e.button !== 0) return;
 		if (e.target && e.target.closest && e.target.closest(".cell-x")) return;
 		startPos = { x: e.clientX, y: e.clientY };
 		pendingDrag = { id: cell ? cell.id : null, kind, rowId, day, slot, label: cell ? cell.label : "" };
-		try { e.currentTarget.setPointerCapture(e.pointerId); } catch (_) {}
 	}
 	function onPointerMove(e) {
 		if (!pendingDrag || !startPos) return;
@@ -288,8 +301,7 @@
 		const wasDrag = !!dragId;
 		dragId = null; ghost = null;
 		if (wasDrag) {
-			const el = document.elementFromPoint(e.clientX, e.clientY);
-			const td = el && el.closest ? el.closest("[data-cell]") : null;
+			const td = hitCell(e.clientX, e.clientY);
 			if (td) {
 				const day = parseInt(td.getAttribute("data-day"));
 				const slot = parseInt(td.getAttribute("data-slot"));
@@ -314,6 +326,20 @@
 		}
 	}
 	function onPointerCancel() { pendingDrag = null; dragId = null; ghost = null; startPos = null; }
+
+	// Attach pointer listeners to window directly (more reliable in the Wails
+	// webview than the <svelte:window> directive) and clean up on destroy.
+	function attachDragListeners() {
+		window.addEventListener("pointermove", onPointerMove);
+		window.addEventListener("pointerup", onPointerUp);
+		window.addEventListener("pointercancel", onPointerCancel);
+	}
+	function detachDragListeners() {
+		window.removeEventListener("pointermove", onPointerMove);
+		window.removeEventListener("pointerup", onPointerUp);
+		window.removeEventListener("pointercancel", onPointerCancel);
+	}
+	onMount(() => { attachDragListeners(); return () => detachDragListeners(); });
 	function cellAt(kind, id, day, slot) {
 		const e = schedule.find((en) => {
 			let match;
@@ -424,7 +450,7 @@
 				if (lx > pageW - 30) { lx = margin; ly -= 5; }
 			}
 		}
-		const base64 = doc.output("base64");
+		const base64 = doc.output("datauristring").split(",")[1] || "";
 		const defName = "Расписание_" + fileSlug(pdfSchoolName()) + "_" + new Date().toISOString().slice(0, 10) + ".pdf";
 		try {
 			await saveFile(defName, base64, "application/pdf", true);
@@ -535,33 +561,23 @@
 	function escapeHtml(s) {
 		return String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 	}
-	function base64ToBlob(b64, mime) {
-		const bin = atob(b64);
-		const len = bin.length;
-		const bytes = new Uint8Array(len);
-		for (let i = 0; i < len; i++) bytes[i] = bin.charCodeAt(i);
-		return new Blob([bytes], { type: mime });
-	}
+	let saveModal = null; // { filename, content, mime, isBase64 }
 	async function saveFile(filename, content, mime, isBase64) {
-		const b64 = isBase64 ? content : btoa(unescape(encodeURIComponent(content)));
-		try {
-			const path = await SaveFileWithDialog(filename);
-			if (!path) { flash("Сохранение отменено"); return; }
-			await SaveFile(path, b64);
-			flash("Сохранено: " + path);
-			return;
-		} catch (e) { /* fall back to browser download below */ }
-		try {
-			const blob = isBase64 ? base64ToBlob(content, mime) : new Blob([content], { type: mime });
-			const url = URL.createObjectURL(blob);
-			const a = document.createElement("a");
-			a.href = url; a.download = filename; document.body.appendChild(a); a.click(); a.remove();
-			URL.revokeObjectURL(url);
-			flash("Файл скачан: " + filename);
-		} catch (e2) {
-			flash("Ошибка сохранения: " + (e2 && e2.message ? e2.message : e2));
-		}
+		saveModal = { filename, content, mime, isBase64 };
 	}
+	async function confirmSave() {
+		if (!saveModal) return;
+		const name = saveModal.filename || "export";
+		const b64 = saveModal.isBase64 ? saveModal.content : btoa(unescape(encodeURIComponent(saveModal.content)));
+		try {
+			const path = await SaveExport(name, b64);
+			flash("Сохранено: " + path);
+		} catch (e) {
+			flash("Ошибка сохранения: " + (e && e.message ? e.message : e));
+		}
+		saveModal = null;
+	}
+	function cancelSave() { saveModal = null; }
 	async function downloadRefsCSV(entity) {
 		const csv = await ExportRefsCSV(activeSchoolID, entity);
 		await saveFile(entity + ".csv", csv, "text/csv", false);
@@ -656,8 +672,6 @@
 	loadSchools();
 </script>
 
-<svelte:window on:pointermove={onPointerMove} on:pointerup={onPointerUp} on:pointercancel={onPointerCancel} />
-
 <div class="app">
 	<aside class="sidebar">
 		<div class="brand">📅 <span>Timetable</span></div>
@@ -685,6 +699,7 @@
 				<button class="primary sm" on:click={createSchool}>+ Школа</button>
 			</div>
 			{#if msg}<div class="toast">{msg}</div>{/if}
+			<span class="ver">v{APP_VERSION}</span>
 		</header>
 
 		<main>
@@ -964,6 +979,20 @@
 				</section>
 			{/if}
 		</main>
+
+		{#if saveModal}
+			<div class="modal-backdrop" on:click={cancelSave}>
+				<div class="modal" on:click|stopPropagation>
+					<h3>Сохранить файл</h3>
+					<p class="muted">Файл будет записан в папку ~/Downloads</p>
+					<input class="modal-input" bind:value={saveModal.filename} placeholder="имя файла" on:keydown={(e) => { if (e.key === "Enter") confirmSave(); }} />
+					<div class="modal-actions">
+						<button on:click={cancelSave}>Отмена</button>
+						<button class="primary" on:click={confirmSave}>Сохранить</button>
+					</div>
+				</div>
+			</div>
+		{/if}
 	</div>
 </div>
 
@@ -1090,6 +1119,12 @@
 	.class-block.compact h3 { font-size: 11px; margin: 0 0 4px; }
 
 	.toast { background: #16a34a; color: #fff; padding: 8px 14px; border-radius: 10px; font-size: 13px; margin-left: auto; }
+	.ver { margin-left: auto; font-size: 12px; color: #94a3b8; font-family: ui-monospace, monospace; }
+	.modal-backdrop { position: fixed; inset: 0; background: rgba(15,23,42,0.5); display: flex; align-items: center; justify-content: center; z-index: 10000; }
+	.modal { background: #fff; border-radius: 14px; padding: 22px; width: 360px; max-width: 90vw; box-shadow: 0 20px 60px rgba(0,0,0,0.3); }
+	.modal h3 { margin: 0 0 6px; font-size: 16px; color: #0f172a; }
+	.modal-input { width: 100%; margin: 12px 0; box-sizing: border-box; }
+	.modal-actions { display: flex; justify-content: flex-end; gap: 8px; }
 	.report { margin-top: 14px; border: 1px solid #fecaca; background: #fef2f2; border-radius: 10px; padding: 10px 14px; font-size: 13px; }
 	.report h3 { margin: 0 0 6px; font-size: 13px; color: #b91c1c; }
 	.rep-sec { margin: 6px 0; }
