@@ -17,6 +17,8 @@ import (
 	"timetable/internal/domain"
 	"timetable/internal/io"
 	"timetable/internal/solver"
+
+	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 // App is the Wails-bound backend.
@@ -137,6 +139,16 @@ func (a *App) SaveFile(path string, b64 string) error {
 		return err
 	}
 	return os.WriteFile(path, data, 0644)
+}
+
+// SaveFileWithDialog shows a native save dialog and returns the chosen path
+// (empty string if cancelled). Uses Wails v2 runtime.SaveFileDialog.
+func (a *App) SaveFileWithDialog(defaultName string) (string, error) {
+	return wailsruntime.SaveFileDialog(a.ctx, wailsruntime.SaveDialogOptions{
+		Title:             "Сохранить файл",
+		DefaultFilename:   defaultName,
+		CanCreateDirectories: true,
+	})
 }
 
 // ---- Constraints ----

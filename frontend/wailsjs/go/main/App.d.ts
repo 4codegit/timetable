@@ -70,6 +70,8 @@ export function ReplaceSchedule(arg1:number,arg2:Array<domain.ScheduleEntry>):Pr
 
 export function SaveFile(arg1:string,arg2:string):Promise<void>;
 
+export function SaveFileWithDialog(arg1:string):Promise<string>;
+
 export function ScheduleCSV(arg1:number,arg2:number,arg3:number):Promise<string>;
 
 export function UpdateLesson(arg1:domain.Lesson):Promise<domain.Lesson>;

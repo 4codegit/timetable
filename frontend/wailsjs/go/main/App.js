@@ -134,6 +134,10 @@ export function SaveFile(arg1, arg2) {
   return window['go']['main']['App']['SaveFile'](arg1, arg2);
 }
 
+export function SaveFileWithDialog(arg1) {
+  return window['go']['main']['App']['SaveFileWithDialog'](arg1);
+}
+
 export function ScheduleCSV(arg1, arg2, arg3) {
   return window['go']['main']['App']['ScheduleCSV'](arg1, arg2, arg3);
 }

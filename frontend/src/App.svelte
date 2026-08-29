@@ -5,7 +5,7 @@
 		CreateClass, ListClasses, CreateRoom, ListRooms,
 		CreateLesson, ListLessons, DeleteLesson, UpdateLesson,
 		CreateConstraint, ListConstraints, DeleteConstraint,
-		DeleteTeacher, DeleteSubject, DeleteClass, DeleteRoom, DeleteScheduleEntry, SaveFile,
+		DeleteTeacher, DeleteSubject, DeleteClass, DeleteRoom, DeleteScheduleEntry, SaveFile, SaveFileWithDialog,
 		Generate, GeneratePrecise, MoveEntry, ReplaceSchedule, ListSchedule, ExportAll, ImportAll, ScheduleCSV, ExportRefsCSV, ImportRefsCSV, GetSchoolSettings, UpdateSchoolSettings
 	} from "../wailsjs/go/main/App";
 	import { jsPDF } from "jspdf";
@@ -545,16 +545,12 @@
 	async function saveFile(filename, content, mime, isBase64) {
 		const b64 = isBase64 ? content : btoa(unescape(encodeURIComponent(content)));
 		try {
-			if (window.runtime && typeof window.runtime.SaveFileDialog === "function") {
-				const path = await window.runtime.SaveFileDialog({ Title: "Сохранить файл", DefaultFilename: filename, Filters: [] });
-				if (path) {
-					await SaveFile(path, b64);
-					flash("Сохранено: " + path);
-					return;
-				}
-				return;
-			}
-		} catch (e) { /* fall back to browser download */ }
+			const path = await SaveFileWithDialog(filename);
+			if (!path) { flash("Сохранение отменено"); return; }
+			await SaveFile(path, b64);
+			flash("Сохранено: " + path);
+			return;
+		} catch (e) { /* fall back to browser download below */ }
 		try {
 			const blob = isBase64 ? base64ToBlob(content, mime) : new Blob([content], { type: mime });
 			const url = URL.createObjectURL(blob);
@@ -562,8 +558,8 @@
 			a.href = url; a.download = filename; document.body.appendChild(a); a.click(); a.remove();
 			URL.revokeObjectURL(url);
 			flash("Файл скачан: " + filename);
-		} catch (e) {
-			flash("Ошибка сохранения: " + e.message);
+		} catch (e2) {
+			flash("Ошибка сохранения: " + (e2 && e2.message ? e2.message : e2));
 		}
 	}
 	async function downloadRefsCSV(entity) {
