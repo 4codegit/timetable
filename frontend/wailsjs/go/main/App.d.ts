@@ -14,6 +14,12 @@ export function CreateRoom(arg1:domain.Room):Promise<domain.Room>;
 
 export function CreateSchool(arg1:string):Promise<domain.School>;
 
+export function DeleteSchool(arg1:number):Promise<void>;
+
+export function SchoolHasLessons(arg1:number):Promise<boolean>;
+
+export function SchoolHasSchedule(arg1:number):Promise<boolean>;
+
 export function CreateSubject(arg1:domain.Subject):Promise<domain.Subject>;
 
 export function CreateTeacher(arg1:domain.Teacher):Promise<domain.Teacher>;

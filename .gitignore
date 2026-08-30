@@ -1,16 +1,30 @@
-node_modules/
-frontend/node_modules/
-build/
-windows/staging/
-*.db
-*.db-journal
-frontend/dist/
-dist/
-.DS_Store
-third_party/ortools/
-third_party/ortools_win/
-third_party/ortools_bind/bind.o
-third_party/ortools_bind/bind_win.o
+# Build output
+/timetable
+/timetable.exe
+/build/
 
-# AppImage extraction test artifacts
-squashfs-root/
+# Database
+*.db
+
+# Frontend
+frontend/node_modules/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Wails
+wailsjs/
+
+# AppImage
+*.AppImage
+
+# Distribution
+dist/

@@ -22,6 +22,18 @@ export function CreateSchool(arg1) {
   return window['go']['main']['App']['CreateSchool'](arg1);
 }
 
+export function DeleteSchool(arg1) {
+  return window['go']['main']['App']['DeleteSchool'](arg1);
+}
+
+export function SchoolHasLessons(arg1) {
+  return window['go']['main']['App']['SchoolHasLessons'](arg1);
+}
+
+export function SchoolHasSchedule(arg1) {
+  return window['go']['main']['App']['SchoolHasSchedule'](arg1);
+}
+
 export function CreateSubject(arg1) {
   return window['go']['main']['App']['CreateSubject'](arg1);
 }
