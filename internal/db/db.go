@@ -12,9 +12,20 @@ import (
 	"timetable/internal/domain"
 )
 
+// dbtx is the interface used by Store for queries. Both *sql.DB and *sql.Tx
+// satisfy it, so WithTx can transparently wrap a transaction.
+type dbtx interface {
+	Exec(query string, args ...any) (sql.Result, error)
+	Query(query string, args ...any) (*sql.Rows, error)
+	QueryRow(query string, args ...any) *sql.Row
+}
+
 // Store wraps the database and provides CRUD for all entities.
+// db is used for all queries (works with both *sql.DB and *sql.Tx).
+// root is the underlying *sql.DB used only for Begin/Close.
 type Store struct {
-	DB *sql.DB
+	db   dbtx
+	root *sql.DB
 }
 
 // New opens (or creates) the SQLite database and runs migrations.
@@ -23,7 +34,7 @@ func New(path string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := &Store{DB: d}
+	s := &Store{db: d, root: d}
 	if err := s.migrate(); err != nil {
 		return nil, err
 	}
@@ -106,7 +117,7 @@ func (s *Store) migrate() error {
 		`CREATE INDEX IF NOT EXISTS idx_se_lookup ON schedule_entries(school_id, day_of_week, timeslot)`,
 	}
 	for _, st := range stmts {
-		if _, err := s.DB.Exec(st); err != nil {
+		if _, err := s.db.Exec(st); err != nil {
 			return err
 		}
 	}
@@ -116,7 +127,7 @@ func (s *Store) migrate() error {
 // ---- Schools ----
 
 func (s *Store) CreateSchool(name string) (*domain.School, error) {
-	res, err := s.DB.Exec(`INSERT INTO schools (name, settings_json) VALUES (?, '{}')`, name)
+	res, err := s.db.Exec(`INSERT INTO schools (name, settings_json) VALUES (?, '{}')`, name)
 	if err != nil {
 		return nil, err
 	}
@@ -125,7 +136,7 @@ func (s *Store) CreateSchool(name string) (*domain.School, error) {
 }
 
 func (s *Store) ListSchools() ([]domain.School, error) {
-	rows, err := s.DB.Query(`SELECT id, name, settings_json FROM schools`)
+	rows, err := s.db.Query(`SELECT id, name, settings_json FROM schools`)
 	if err != nil {
 		return nil, err
 	}
@@ -143,19 +154,19 @@ func (s *Store) ListSchools() ([]domain.School, error) {
 
 func (s *Store) GetSchoolSettings(id int) (string, error) {
 	var js string
-	err := s.DB.QueryRow(`SELECT settings_json FROM schools WHERE id = ?`, id).Scan(&js)
+	err := s.db.QueryRow(`SELECT settings_json FROM schools WHERE id = ?`, id).Scan(&js)
 	return js, err
 }
 
 func (s *Store) UpdateSchoolSettings(id int, settings string) error {
-	_, err := s.DB.Exec(`UPDATE schools SET settings_json = ? WHERE id = ?`, settings, id)
+	_, err := s.db.Exec(`UPDATE schools SET settings_json = ? WHERE id = ?`, settings, id)
 	return err
 }
 
 // ---- Teachers ----
 
 func (s *Store) CreateTeacher(t domain.Teacher) (*domain.Teacher, error) {
-	res, err := s.DB.Exec(`INSERT INTO teachers (school_id, name, short_name, max_hours_per_week, preferences_json) VALUES (?,?,?,?,?)`,
+	res, err := s.db.Exec(`INSERT INTO teachers (school_id, name, short_name, max_hours_per_week, preferences_json) VALUES (?,?,?,?,?)`,
 		t.SchoolID, t.Name, t.ShortName, t.MaxHoursPerWeek, orDefault(t.PreferencesJSON, "{}"))
 	if err != nil {
 		return nil, err
@@ -166,7 +177,7 @@ func (s *Store) CreateTeacher(t domain.Teacher) (*domain.Teacher, error) {
 }
 
 func (s *Store) ListTeachers(schoolID int) ([]domain.Teacher, error) {
-	rows, err := s.DB.Query(`SELECT id, school_id, name, short_name, max_hours_per_week, preferences_json FROM teachers WHERE school_id=?`, schoolID)
+	rows, err := s.db.Query(`SELECT id, school_id, name, short_name, max_hours_per_week, preferences_json FROM teachers WHERE school_id=?`, schoolID)
 	if err != nil {
 		return nil, err
 	}
@@ -185,7 +196,7 @@ func (s *Store) ListTeachers(schoolID int) ([]domain.Teacher, error) {
 // ---- Subjects ----
 
 func (s *Store) CreateSubject(sub domain.Subject) (*domain.Subject, error) {
-	res, err := s.DB.Exec(`INSERT INTO subjects (school_id, name, short_name, requires_room_type) VALUES (?,?,?,?)`,
+	res, err := s.db.Exec(`INSERT INTO subjects (school_id, name, short_name, requires_room_type) VALUES (?,?,?,?)`,
 		sub.SchoolID, sub.Name, sub.ShortName, orDefault(sub.RequiresRoomType, "any"))
 	if err != nil {
 		return nil, err
@@ -196,7 +207,7 @@ func (s *Store) CreateSubject(sub domain.Subject) (*domain.Subject, error) {
 }
 
 func (s *Store) ListSubjects(schoolID int) ([]domain.Subject, error) {
-	rows, err := s.DB.Query(`SELECT id, school_id, name, short_name, requires_room_type FROM subjects WHERE school_id=?`, schoolID)
+	rows, err := s.db.Query(`SELECT id, school_id, name, short_name, requires_room_type FROM subjects WHERE school_id=?`, schoolID)
 	if err != nil {
 		return nil, err
 	}
@@ -215,7 +226,7 @@ func (s *Store) ListSubjects(schoolID int) ([]domain.Subject, error) {
 // ---- Classes ----
 
 func (s *Store) CreateClass(c domain.SchoolClass) (*domain.SchoolClass, error) {
-	res, err := s.DB.Exec(`INSERT INTO classes (school_id, name, grade, student_count, subgroup_of) VALUES (?,?,?,?,?)`,
+	res, err := s.db.Exec(`INSERT INTO classes (school_id, name, grade, student_count, subgroup_of) VALUES (?,?,?,?,?)`,
 		c.SchoolID, c.Name, c.Grade, c.StudentCount, c.SubgroupOf)
 	if err != nil {
 		return nil, err
@@ -226,7 +237,7 @@ func (s *Store) CreateClass(c domain.SchoolClass) (*domain.SchoolClass, error) {
 }
 
 func (s *Store) ListClasses(schoolID int) ([]domain.SchoolClass, error) {
-	rows, err := s.DB.Query(`SELECT id, school_id, name, grade, student_count, subgroup_of FROM classes WHERE school_id=?`, schoolID)
+	rows, err := s.db.Query(`SELECT id, school_id, name, grade, student_count, subgroup_of FROM classes WHERE school_id=?`, schoolID)
 	if err != nil {
 		return nil, err
 	}
@@ -250,7 +261,7 @@ func (s *Store) ListClasses(schoolID int) ([]domain.SchoolClass, error) {
 // ---- Rooms ----
 
 func (s *Store) CreateRoom(r domain.Room) (*domain.Room, error) {
-	res, err := s.DB.Exec(`INSERT INTO rooms (school_id, name, capacity, room_type) VALUES (?,?,?,?)`,
+	res, err := s.db.Exec(`INSERT INTO rooms (school_id, name, capacity, room_type) VALUES (?,?,?,?)`,
 		r.SchoolID, r.Name, r.Capacity, orDefault(r.RoomType, "any"))
 	if err != nil {
 		return nil, err
@@ -261,7 +272,7 @@ func (s *Store) CreateRoom(r domain.Room) (*domain.Room, error) {
 }
 
 func (s *Store) ListRooms(schoolID int) ([]domain.Room, error) {
-	rows, err := s.DB.Query(`SELECT id, school_id, name, capacity, room_type FROM rooms WHERE school_id=?`, schoolID)
+	rows, err := s.db.Query(`SELECT id, school_id, name, capacity, room_type FROM rooms WHERE school_id=?`, schoolID)
 	if err != nil {
 		return nil, err
 	}
@@ -280,7 +291,7 @@ func (s *Store) ListRooms(schoolID int) ([]domain.Room, error) {
 // ---- Lessons ----
 
 func (s *Store) CreateLesson(l domain.Lesson) (*domain.Lesson, error) {
-	res, err := s.DB.Exec(`INSERT INTO lessons (school_id, class_id, subject_id, teacher_id, hours_per_week, min_gap_days, can_split, preferred_rooms) VALUES (?,?,?,?,?,?,?,?)`,
+	res, err := s.db.Exec(`INSERT INTO lessons (school_id, class_id, subject_id, teacher_id, hours_per_week, min_gap_days, can_split, preferred_rooms) VALUES (?,?,?,?,?,?,?,?)`,
 		l.SchoolID, l.ClassID, l.SubjectID, l.TeacherID, l.HoursPerWeek, l.MinGapDays, l.CanSplit, orDefault(l.PreferredRooms, "[]"))
 	if err != nil {
 		return nil, err
@@ -291,7 +302,7 @@ func (s *Store) CreateLesson(l domain.Lesson) (*domain.Lesson, error) {
 }
 
 func (s *Store) ListLessons(schoolID int) ([]domain.Lesson, error) {
-	rows, err := s.DB.Query(`SELECT id, school_id, class_id, subject_id, teacher_id, hours_per_week, min_gap_days, can_split, preferred_rooms FROM lessons WHERE school_id=?`, schoolID)
+	rows, err := s.db.Query(`SELECT id, school_id, class_id, subject_id, teacher_id, hours_per_week, min_gap_days, can_split, preferred_rooms FROM lessons WHERE school_id=?`, schoolID)
 	if err != nil {
 		return nil, err
 	}
@@ -310,50 +321,50 @@ func (s *Store) ListLessons(schoolID int) ([]domain.Lesson, error) {
 }
 
 func (s *Store) DeleteLesson(id int) error {
-	_, err := s.DB.Exec(`DELETE FROM lessons WHERE id=?`, id)
+	_, err := s.db.Exec(`DELETE FROM lessons WHERE id=?`, id)
 	return err
 }
 
 func (s *Store) UpdateLesson(l domain.Lesson) error {
-	_, err := s.DB.Exec(`UPDATE lessons SET class_id=?, subject_id=?, teacher_id=?, hours_per_week=?, min_gap_days=?, can_split=?, preferred_rooms=? WHERE id=?`,
+	_, err := s.db.Exec(`UPDATE lessons SET class_id=?, subject_id=?, teacher_id=?, hours_per_week=?, min_gap_days=?, can_split=?, preferred_rooms=? WHERE id=?`,
 		l.ClassID, l.SubjectID, l.TeacherID, l.HoursPerWeek, l.MinGapDays, l.CanSplit, orDefault(l.PreferredRooms, "[]"), l.ID)
 	return err
 }
 
 func (s *Store) DeleteTeacher(id int) error {
-	_, err := s.DB.Exec(`DELETE FROM teachers WHERE id=?`, id)
+	_, err := s.db.Exec(`DELETE FROM teachers WHERE id=?`, id)
 	return err
 }
 
 func (s *Store) DeleteSubject(id int) error {
-	_, err := s.DB.Exec(`DELETE FROM subjects WHERE id=?`, id)
+	_, err := s.db.Exec(`DELETE FROM subjects WHERE id=?`, id)
 	return err
 }
 
 func (s *Store) DeleteClass(id int) error {
-	_, err := s.DB.Exec(`DELETE FROM classes WHERE id=?`, id)
+	_, err := s.db.Exec(`DELETE FROM classes WHERE id=?`, id)
 	return err
 }
 
 func (s *Store) DeleteRoom(id int) error {
-	_, err := s.DB.Exec(`DELETE FROM rooms WHERE id=?`, id)
+	_, err := s.db.Exec(`DELETE FROM rooms WHERE id=?`, id)
 	return err
 }
 
 func (s *Store) DeleteConstraint(id int) error {
-	_, err := s.DB.Exec(`DELETE FROM constraints WHERE id=?`, id)
+	_, err := s.db.Exec(`DELETE FROM constraints WHERE id=?`, id)
 	return err
 }
 
 func (s *Store) DeleteScheduleEntry(id int) error {
-	_, err := s.DB.Exec(`DELETE FROM schedule_entries WHERE id=?`, id)
+	_, err := s.db.Exec(`DELETE FROM schedule_entries WHERE id=?`, id)
 	return err
 }
 
 // ---- Constraints ----
 
 func (s *Store) CreateConstraint(c domain.Constraint) (*domain.Constraint, error) {
-	res, err := s.DB.Exec(`INSERT INTO constraints (school_id, type, entity_type, entity_id, day_of_week, timeslot_start, timeslot_end, weight, is_hard, params_json) VALUES (?,?,?,?,?,?,?,?,?,?)`,
+	res, err := s.db.Exec(`INSERT INTO constraints (school_id, type, entity_type, entity_id, day_of_week, timeslot_start, timeslot_end, weight, is_hard, params_json) VALUES (?,?,?,?,?,?,?,?,?,?)`,
 		c.SchoolID, c.Type, c.EntityType, c.EntityID, c.DayOfWeek, c.TimeslotStart, c.TimeslotEnd, c.Weight, c.IsHard, orDefault(c.ParamsJSON, "{}"))
 	if err != nil {
 		return nil, err
@@ -364,7 +375,7 @@ func (s *Store) CreateConstraint(c domain.Constraint) (*domain.Constraint, error
 }
 
 func (s *Store) ListConstraints(schoolID int) ([]domain.Constraint, error) {
-	rows, err := s.DB.Query(`SELECT id, school_id, type, entity_type, entity_id, day_of_week, timeslot_start, timeslot_end, weight, is_hard, params_json FROM constraints WHERE school_id=?`, schoolID)
+	rows, err := s.db.Query(`SELECT id, school_id, type, entity_type, entity_id, day_of_week, timeslot_start, timeslot_end, weight, is_hard, params_json FROM constraints WHERE school_id=?`, schoolID)
 	if err != nil {
 		return nil, err
 	}
@@ -399,7 +410,7 @@ func (s *Store) ListConstraints(schoolID int) ([]domain.Constraint, error) {
 
 // ClearSchedule removes all entries for a school.
 func (s *Store) ClearSchedule(schoolID int) error {
-	_, err := s.DB.Exec(`DELETE FROM schedule_entries WHERE school_id=?`, schoolID)
+	_, err := s.db.Exec(`DELETE FROM schedule_entries WHERE school_id=?`, schoolID)
 	return err
 }
 
@@ -408,7 +419,7 @@ func (s *Store) SaveSchedule(entries []domain.ScheduleEntry) error {
 	if len(entries) == 0 {
 		return nil
 	}
-	tx, err := s.DB.Begin()
+	tx, err := s.root.Begin()
 	if err != nil {
 		return err
 	}
@@ -428,7 +439,7 @@ func (s *Store) SaveSchedule(entries []domain.ScheduleEntry) error {
 }
 
 func (s *Store) ListSchedule(schoolID int) ([]domain.ScheduleEntry, error) {
-	rows, err := s.DB.Query(`SELECT id, school_id, lesson_id, class_id, teacher_id, subject_id, room_id, day_of_week, timeslot, week_type FROM schedule_entries WHERE school_id=?`, schoolID)
+	rows, err := s.db.Query(`SELECT id, school_id, lesson_id, class_id, teacher_id, subject_id, room_id, day_of_week, timeslot, week_type FROM schedule_entries WHERE school_id=?`, schoolID)
 	if err != nil {
 		return nil, err
 	}
@@ -446,7 +457,7 @@ func (s *Store) ListSchedule(schoolID int) ([]domain.ScheduleEntry, error) {
 
 // MoveEntry relocates a single schedule entry to a new day/slot (manual DnD edit).
 func (s *Store) MoveEntry(id, day, slot int) error {
-	_, err := s.DB.Exec(`UPDATE schedule_entries SET day_of_week=?, timeslot=? WHERE id=?`, day, slot, id)
+	_, err := s.db.Exec(`UPDATE schedule_entries SET day_of_week=?, timeslot=? WHERE id=?`, day, slot, id)
 	return err
 }
 
@@ -472,11 +483,11 @@ func orDefault(v, def string) string {
 // transaction is rolled back; otherwise it is committed. The Store passed to
 // fn shares the same underlying DB so all existing methods work transparently.
 func (s *Store) WithTx(fn func(*Store) error) error {
-	tx, err := s.DB.Begin()
+	tx, err := s.root.Begin()
 	if err != nil {
 		return err
 	}
-	txStore := &Store{DB: tx}
+	txStore := &Store{db: tx, root: s.root}
 	if err := fn(txStore); err != nil {
 		tx.Rollback()
 		return err
@@ -497,7 +508,7 @@ func (s *Store) ClearSchoolData(schoolID int) error {
 		"teachers",
 	}
 	for _, table := range tables {
-		if _, err := s.DB.Exec(fmt.Sprintf("DELETE FROM %s WHERE school_id = ?", table), schoolID); err != nil {
+		if _, err := s.db.Exec(fmt.Sprintf("DELETE FROM %s WHERE school_id = ?", table), schoolID); err != nil {
 			return fmt.Errorf("clear %s: %w", table, err)
 		}
 	}
@@ -506,7 +517,7 @@ func (s *Store) ClearSchoolData(schoolID int) error {
 
 // DeleteSchool removes a school and all its data (cascading).
 func (s *Store) DeleteSchool(id int) error {
-	_, err := s.DB.Exec(`DELETE FROM schools WHERE id = ?`, id)
+	_, err := s.db.Exec(`DELETE FROM schools WHERE id = ?`, id)
 	return err
 }
 
@@ -514,14 +525,14 @@ func (s *Store) DeleteSchool(id int) error {
 // Used to warn before deletion.
 func (s *Store) SchoolHasLessons(schoolID int) (bool, error) {
 	var count int
-	err := s.DB.QueryRow(`SELECT COUNT(*) FROM lessons WHERE school_id = ?`, schoolID).Scan(&count)
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM lessons WHERE school_id = ?`, schoolID).Scan(&count)
 	return count > 0, err
 }
 
 // SchoolHasSchedule checks whether a school has generated schedule entries.
 func (s *Store) SchoolHasSchedule(schoolID int) (bool, error) {
 	var count int
-	err := s.DB.QueryRow(`SELECT COUNT(*) FROM schedule_entries WHERE school_id = ?`, schoolID).Scan(&count)
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM schedule_entries WHERE school_id = ?`, schoolID).Scan(&count)
 	return count > 0, err
 }
 
