@@ -13,21 +13,21 @@ import (
 
 // Occurrence is one required placement of a lesson.
 type Occurrence struct {
-	Lesson   domain.Lesson
-	Index    int // which occurrence (0..hours-1)
+	Lesson      domain.Lesson
+	Index       int // which occurrence (0..hours-1)
 	RoomChoices []int
 }
 
 // SolveInput bundles everything the solver needs.
 type SolveInput struct {
-	SchoolID   int
-	Lessons    []domain.Lesson
-	Teachers   map[int]domain.Teacher
-	Classes    map[int]domain.SchoolClass
-	Rooms      []domain.Room
-	Subjects   map[int]domain.Subject
+	SchoolID    int
+	Lessons     []domain.Lesson
+	Teachers    map[int]domain.Teacher
+	Classes     map[int]domain.SchoolClass
+	Rooms       []domain.Room
+	Subjects    map[int]domain.Subject
 	Constraints []domain.Constraint
-	Config     domain.SchedulingConfig
+	Config      domain.SchedulingConfig
 }
 
 // Result holds the best schedule found and its metric.

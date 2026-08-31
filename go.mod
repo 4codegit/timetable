@@ -1,6 +1,6 @@
 module timetable
 
-go 1.23
+go 1.25.0
 
 // replace github.com/wailsapp/wails/v2 v2.15.0 => /home/narziev/go/pkg/mod
 
