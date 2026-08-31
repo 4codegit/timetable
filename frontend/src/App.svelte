@@ -297,7 +297,7 @@
         let selectedEntry = null;
         let pendingDrag = null;
         let startPos = null;
-        let dragId = null;
+        let dragging = false;
         let ghost = null;
 
         // Engine-independent hit-test: find the schedule cell whose bounding rect
@@ -315,50 +315,61 @@
         function onPointerDown(e, cell, kind, rowId, day, slot) {
                 if (e.button !== 0) return;
                 if (e.target && e.target.closest && e.target.closest(".cell-x")) return;
+                e.preventDefault();
                 startPos = { x: e.clientX, y: e.clientY };
                 pendingDrag = { id: cell ? cell.id : null, kind, rowId, day, slot, label: cell ? cell.label : "" };
+                dragging = false;
         }
         function onPointerMove(e) {
                 if (!pendingDrag || !startPos) return;
                 const dx = e.clientX - startPos.x, dy = e.clientY - startPos.y;
-                if (!dragId && Math.hypot(dx, dy) > 6) {
-                        dragId = pendingDrag.id;
+                if (!dragging && Math.hypot(dx, dy) > 6) {
+                        dragging = true;
+                }
+                if (dragging) {
                         ghost = { label: pendingDrag.label, x: e.clientX, y: e.clientY };
                 }
-                if (dragId) ghost = { label: ghost.label, x: e.clientX, y: e.clientY };
         }
         async function onPointerUp(e) {
-                if (!pendingDrag) { dragId = null; ghost = null; return; }
+                if (!pendingDrag) { dragging = false; ghost = null; return; }
                 const pd = pendingDrag;
                 pendingDrag = null;
-                const wasDrag = !!dragId;
-                dragId = null; ghost = null;
-                if (wasDrag) {
+                const wasDrag = dragging;
+                dragging = false;
+                ghost = null;
+                if (wasDrag && pd.id) {
                         const td = hitCell(e.clientX, e.clientY);
                         if (td) {
-                                const day = parseInt(td.getAttribute("data-day"));
-                                const slot = parseInt(td.getAttribute("data-slot"));
-                                const rowId = parseInt(td.getAttribute("data-row"));
-                                const kind = td.getAttribute("data-kind");
-                                if (!isNaN(day) && !isNaN(slot) && !isNaN(rowId) && (day !== pd.day || slot !== pd.slot)) {
-                                        await applyMove(pd.id, kind, rowId, day, slot);
+                                const tDay = parseInt(td.getAttribute("data-day"));
+                                const tSlot = parseInt(td.getAttribute("data-slot"));
+                                const tRow = parseInt(td.getAttribute("data-row"));
+                                const tKind = td.getAttribute("data-kind");
+                                if (!isNaN(tDay) && !isNaN(tSlot) && !isNaN(tRow)) {
+                                        if (tDay === pd.day && tSlot === pd.slot && tRow === pd.rowId) return;
+                                        try { await applyMove(pd.id, tKind, tRow, tDay, tSlot); }
+                                        catch (err) { flash("Ошибка: " + (err && err.message ? err.message : err)); }
                                 }
                         }
                         return;
                 }
-                // click without drag -> select / move
+                // Click without drag: select or click-to-move
                 if (!pd.id) {
-                        if (selectedEntry) { await applyMove(selectedEntry.id, pd.kind, pd.rowId, pd.day, pd.slot); selectedEntry = null; }
+                        if (selectedEntry) {
+                                try { await applyMove(selectedEntry.id, pd.kind, pd.rowId, pd.day, pd.slot); }
+                                catch (err) { flash("Ошибка: " + (err && err.message ? err.message : err)); }
+                                selectedEntry = null;
+                        }
                         return;
                 }
                 if (selectedEntry && selectedEntry.id !== pd.id) {
-                        await applyMove(selectedEntry.id, pd.kind, pd.rowId, pd.day, pd.slot);
+                        try { await applyMove(selectedEntry.id, pd.kind, pd.rowId, pd.day, pd.slot); }
+                        catch (err) { flash("Ошибка: " + (err && err.message ? err.message : err)); }
                         selectedEntry = null;
                 } else {
                         selectedEntry = (selectedEntry && selectedEntry.id === pd.id) ? null : { id: pd.id };
                 }
         }
-        function onPointerCancel() { pendingDrag = null; dragId = null; ghost = null; startPos = null; }
+        function onPointerCancel() { pendingDrag = null; dragging = false; ghost = null; startPos = null; }
 
         // Attach pointer listeners to window directly (more reliable in the Wails
         // webview than the <svelte:window> directive) and clean up on destroy.
@@ -1142,10 +1153,10 @@
         .class-block { margin-bottom: 22px; min-width: 520px; }
         .class-block h3 { margin: 0 0 8px; font-size: 14px; color: #0f172a; }
         .class-block table { border-collapse: collapse; width: 100%; }
-        .class-block th, .class-block td { border: 1px solid #e2e8f0; padding: 6px 8px; text-align: center; font-size: 12px; height: 38px; user-select: none; -webkit-user-select: none; }
+        .class-block th, .class-block td { border: 1px solid #e2e8f0; padding: 6px 8px; text-align: center; font-size: 12px; height: 38px; user-select: none; -webkit-user-select: none; touch-action: none; }
         .class-block th { background: #f8fafc; color: #64748b; font-weight: 600; }
         .class-block td.day { background: #f1f5f9; font-weight: 600; white-space: nowrap; }
-        td.filled { cursor: grab; border-radius: 4px; font-weight: 500; touch-action: none; }
+        td.filled { cursor: grab; border-radius: 4px; font-weight: 500; }
         td.filled:active { cursor: grabbing; }
         td.filled.conflict { background: #b91c1c !important; color: #fff; }
         .cell-x { position: absolute; top: 1px; right: 1px; border: none; background: rgba(0,0,0,0.18); color: #fff; width: 16px; height: 16px; line-height: 14px; border-radius: 4px; cursor: pointer; font-size: 10px; padding: 0; }
