@@ -72,6 +72,8 @@ export function ListTeachers(arg1:number):Promise<Array<domain.Teacher>>;
 
 export function MoveEntry(arg1:number,arg2:number,arg3:number):Promise<void>;
 
+export function SwapEntries(arg1:number,arg2:number,arg3:number,arg4:number,arg5:number,arg6:number):Promise<void>;
+
 export function ReplaceSchedule(arg1:number,arg2:Array<domain.ScheduleEntry>):Promise<void>;
 
 export function SaveExport(arg1:string,arg2:string):Promise<string>;

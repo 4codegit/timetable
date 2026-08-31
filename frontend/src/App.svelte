@@ -6,7 +6,7 @@
                 CreateLesson, ListLessons, DeleteLesson, UpdateLesson,
                 CreateConstraint, ListConstraints, DeleteConstraint,
                 DeleteTeacher, DeleteSubject, DeleteClass, DeleteRoom, DeleteScheduleEntry, SaveExport,
-                Generate, GeneratePrecise, MoveEntry, ReplaceSchedule, ListSchedule, ExportAll, ImportAll, ScheduleCSV, ExportRefsCSV, ImportRefsCSV, GetSchoolSettings, UpdateSchoolSettings
+                Generate, GeneratePrecise, MoveEntry, SwapEntries, ReplaceSchedule, ListSchedule, ExportAll, ImportAll, ScheduleCSV, ExportRefsCSV, ImportRefsCSV, GetSchoolSettings, UpdateSchoolSettings
         } from "../wailsjs/go/main/App";
         import { jsPDF } from "jspdf";
         import { onMount } from "svelte";
@@ -15,7 +15,7 @@
         let activeSchoolID = 0;
         let newSchoolName = "Моя школа";
         let tab = "refs";
-        const APP_VERSION = "1.6.13";
+        const APP_VERSION = "1.6.15";
         let msg = "";
 
         let teachers = [], subjects = [], classes = [], rooms = [], lessons = [], constraints = [], schedule = [];
@@ -287,8 +287,11 @@
                         if (kind === "teacher") return en.teacher_id === rowId;
                         return en.room_id === rowId;
                 });
-                if (target) await MoveEntry(target.id, src.day_of_week, src.timeslot);
-                await MoveEntry(id, day, slot);
+                if (target) {
+                        await SwapEntries(src.id, day, slot, target.id, src.day_of_week, src.timeslot);
+                } else {
+                        await MoveEntry(id, day, slot);
+                }
                 await reloadSchedule();
         }
         let selectedEntry = null;
