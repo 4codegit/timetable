@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"path/filepath"
 	"testing"
@@ -16,7 +17,7 @@ func newTestApp(t *testing.T) *App {
 	if err != nil {
 		t.Fatalf("db.New: %v", err)
 	}
-	return &App{store: store}
+	return &App{ctx: context.Background(), store: store}
 }
 
 func TestRefsCSVImportExport(t *testing.T) {
