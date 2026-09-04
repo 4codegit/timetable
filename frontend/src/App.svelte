@@ -15,7 +15,7 @@
         let activeSchoolID = 0;
         let newSchoolName = "Моя школа";
         let tab = "refs";
-        const APP_VERSION = "1.6.16";
+        const APP_VERSION = "1.6.17";
         let msg = "";
 
         let teachers = [], subjects = [], classes = [], rooms = [], lessons = [], constraints = [], schedule = [];
@@ -28,6 +28,14 @@
         let l = { class_id: 0, subject_id: 0, teacher_id: 0, hours_per_week: 1, min_gap_days: 1, can_split: false, preferred_rooms: "[]" };
         let curClass = 0;
         let con = { type: "teacher_unavailable", entity_type: "teacher", entity_id: 0, day_of_week: null, timeslot_start: null, timeslot_end: null, weight: 100, is_hard: true };
+        function resetConstraintFields() {
+                // Clear fields that are not relevant for the newly-selected constraint type
+                // so we don't accidentally send stale values to the solver.
+                const f = constraintFields(con.type);
+                if (!f.day) con.day_of_week = null;
+                if (!f.slots) { con.timeslot_start = null; con.timeslot_end = null; }
+                if (!f.value) con.weight = 100;
+        }
 
         let days = 6, slots = 8;
         let bellPeriods = [];
@@ -290,8 +298,19 @@
         }
         async function applyMove(id, kind, rowId, day, slot) {
                 const src = schedule.find(en => en.id === id);
-                if (!src) return;
+                if (!src) {
+                        flash("⚠ Не найден исходный урок — возможно, расписание изменилось. Обновите вкладку.");
+                        return;
+                }
+                // Source's own row identifier (its class/teacher/room id).
+                const srcRowId = kind === "class" ? src.class_id : kind === "teacher" ? src.teacher_id : src.room_id;
+                if (srcRowId !== rowId) {
+                        const rowKindLabel = kind === "class" ? "классами" : kind === "teacher" ? "учителями" : "кабинетами";
+                        flash(`⚠ Нельзя перемещать урок между ${rowKindLabel} (это нарушило бы структуру расписания). Только в пределах одной строки.`);
+                        return;
+                }
                 await pushHistory();
+                // Find target in same row at the destination cell.
                 const target = schedule.find(en => {
                         if (en.id === id) return false;
                         if (en.day_of_week !== day || en.timeslot !== slot) return false;
@@ -299,10 +318,16 @@
                         if (kind === "teacher") return en.teacher_id === rowId;
                         return en.room_id === rowId;
                 });
-                if (target) {
-                        await SwapEntries(src.id, day, slot, target.id, src.day_of_week, src.timeslot);
-                } else {
-                        await MoveEntry(id, day, slot);
+                try {
+                        if (target) {
+                                await SwapEntries(src.id, day, slot, target.id, src.day_of_week, src.timeslot);
+                                flash(`✓ Поменяли местами: ${cellLabelShort(src)} (${dayName(src.day_of_week)} П${src.timeslot + 1}) ⟷ ${cellLabelShort(target)} (${dayName(day)} П${slot + 1})`);
+                        } else {
+                                await MoveEntry(id, day, slot);
+                                flash(`✓ Перемещено: ${cellLabelShort(src)} → ${dayName(day)} П${slot + 1}`);
+                        }
+                } catch (err) {
+                        flash(`⚠ Не удалось переместить: ${err && err.message ? err.message : err}`);
                 }
                 await reloadSchedule();
         }
@@ -720,6 +745,68 @@
         function dayName(d) { return ["Пн","Вт","Ср","Чт","Пт","Сб","Вс"][d] || ("Д" + (d + 1)); }
         function sI(i) { return i + 1; }
         function periodLabel(si) { const p = bellPeriods[si]; return p && p.start ? p.start + "–" + p.end : ""; }
+        function slotLabel(si) {
+                const lbl = periodLabel(si);
+                return "П" + (si + 1) + (lbl ? " " + lbl : "");
+        }
+
+        // -- Constraint UI helpers --
+        const CONSTRAINT_FIELDS = {
+                teacher_unavailable:    { day: true,  slots: true,  value: false, valueLabel: "" },
+                class_unavailable:      { day: true,  slots: true,  value: false, valueLabel: "" },
+                room_unavailable:       { day: true,  slots: true,  value: false, valueLabel: "" },
+                max_consecutive:        { day: false, slots: false, value: true,  valueLabel: "Макс. подряд" },
+                lunch_break:            { day: false, slots: true,  value: false, valueLabel: "" },
+                max_lessons_per_day:    { day: false, slots: false, value: true,  valueLabel: "Макс. в день" },
+                min_lessons_per_day:    { day: false, slots: false, value: true,  valueLabel: "Мин. в день" },
+                prefer_morning:         { day: false, slots: true,  value: false, valueLabel: "" },
+                max_gaps:               { day: false, slots: false, value: true,  valueLabel: "Макс. окон" },
+        };
+        const CONSTRAINT_LABELS = {
+                teacher_unavailable:    "Учитель недоступен",
+                class_unavailable:      "Класс недоступен",
+                room_unavailable:       "Кабинет недоступен",
+                max_consecutive:        "Макс. подряд уроков",
+                lunch_break:            "Обеденный перерыв",
+                max_lessons_per_day:    "Макс. уроков в день",
+                min_lessons_per_day:    "Мин. уроков в день",
+                prefer_morning:         "Желательно утро",
+                max_gaps:               "Макс. окон",
+        };
+        function constraintTypeLabel(t) { return CONSTRAINT_LABELS[t] || t; }
+        function constraintFields(t) { return CONSTRAINT_FIELDS[t] || { day: false, slots: false, value: false, valueLabel: "" }; }
+        function constraintEntityLabel(c) {
+                if (c.entity_type === "school") return "вся школа";
+                const list = c.entity_type === "teacher" ? teachers : c.entity_type === "class" ? classes : rooms;
+                const item = list.find(x => x.id === c.entity_id);
+                return item ? item.name : "#" + c.entity_id;
+        }
+        function constraintDetail(c) {
+                const f = constraintFields(c.type);
+                const parts = [];
+                if (f.day && c.day_of_week != null) parts.push(dayName(c.day_of_week));
+                if (f.slots) {
+                        if (c.timeslot_start != null && c.timeslot_end != null) {
+                                parts.push("П" + (c.timeslot_start + 1) + "–П" + (c.timeslot_end + 1));
+                        } else if (c.timeslot_start != null) {
+                                parts.push("с П" + (c.timeslot_start + 1));
+                        } else if (c.timeslot_end != null) {
+                                parts.push("по П" + (c.timeslot_end + 1));
+                        }
+                }
+                if (f.value) parts.push(String(c.weight));
+                return parts.join(", ");
+        }
+        function constraintSummary(c) {
+                const detail = constraintDetail(c);
+                return constraintTypeLabel(c.type) + " · " + constraintEntityLabel(c) + (detail ? " (" + detail + ")" : "") + " · " + (c.is_hard ? "🔒 жёсткое" : "📝 мягкое");
+        }
+
+        // -- DnD helper for compact labels in flash --
+        function cellLabelShort(e) {
+                if (!e) return "?";
+                return subjName(subjects, e.subject_id) + " (" + teachName(teachers, e.teacher_id) + ")";
+        }
 
         loadSchools();
 </script>
@@ -870,34 +957,90 @@
                         {:else if tab === "constraints"}
                                 <section class="card">
                                         <div class="card-head"><h2>Ограничения</h2></div>
-                                        <div class="lesson-form">
-                                                <select bind:value={con.type}>
-                                                        <option value="teacher_unavailable">Учитель недоступен</option>
-                                                        <option value="class_unavailable">Класс недоступен</option>
-                                                        <option value="room_unavailable">Кабинет недоступен</option>
-                                                        <option value="max_consecutive">Макс. подряд (уроков)</option>
-                                                        <option value="lunch_break">Обеденный перерыв</option>
-                                                        <option value="max_lessons_per_day">Макс. уроков в день</option>
-                                                        <option value="min_lessons_per_day">Мин. уроков в день</option>
-                                                        <option value="prefer_morning">Желательно утро</option>
-                                                        <option value="max_gaps">Макс. окон</option>
-                                                </select>
-                                                <select bind:value={con.entity_type}><option value="teacher">Учитель</option><option value="class">Класс</option><option value="room">Кабинет</option><option value="school">Школа</option></select>
+                                        <div class="lesson-form constraints-form">
+                                                <label class="field">
+                                                        <span class="field-label">Тип</span>
+                                                        <select bind:value={con.type} on:change={resetConstraintFields}>
+                                                                {#each Object.entries(CONSTRAINT_LABELS) as [key, label]}
+                                                                        <option value={key}>{label}</option>
+                                                                {/each}
+                                                        </select>
+                                                </label>
+                                                <label class="field">
+                                                        <span class="field-label">К кому</span>
+                                                        <select bind:value={con.entity_type}>
+                                                                <option value="teacher">Учитель</option>
+                                                                <option value="class">Класс</option>
+                                                                <option value="room">Кабинет</option>
+                                                                <option value="school">Школа</option>
+                                                        </select>
+                                                </label>
                                                 {#if con.entity_type === "school"}
                                                         <span class="muted">вся школа</span>
                                                 {:else}
-                                                        <select bind:value={con.entity_id}><option value={0}>Сущность</option>{#if con.entity_type==="teacher"}{#each teachers as x}<option value={x.id}>{x.name}</option>{/each}{:else if con.entity_type==="class"}{#each classes as x}<option value={x.id}>{x.name}</option>{/each}{:else if con.entity_type==="room"}{#each rooms as x}<option value={x.id}>{x.name}</option>{/each}{/if}</select>
+                                                        <label class="field">
+                                                                <span class="field-label">Кто</span>
+                                                                <select bind:value={con.entity_id}>
+                                                                        <option value={0}>— выберите —</option>
+                                                                        {#if con.entity_type === "teacher"}
+                                                                                {#each teachers as x}<option value={x.id}>{x.name}</option>{/each}
+                                                                        {:else if con.entity_type === "class"}
+                                                                                {#each classes as x}<option value={x.id}>{x.name}</option>{/each}
+                                                                        {:else if con.entity_type === "room"}
+                                                                                {#each rooms as x}<option value={x.id}>{x.name}</option>{/each}
+                                                                        {/if}
+                                                                </select>
+                                                        </label>
                                                 {/if}
-                                                <input type="number" bind:value={con.day_of_week} placeholder="День(0-5)" />
-                                                <input type="number" bind:value={con.timeslot_start} placeholder="Слот с" />
-                                                <input type="number" bind:value={con.timeslot_end} placeholder="Слот по" />
-                                                {#if ["max_consecutive","lunch_break","max_lessons_per_day","min_lessons_per_day"].includes(con.type)}
-                                                        <input type="number" bind:value={con.weight} placeholder="Значение" />
+                                                {#if constraintFields(con.type).day}
+                                                        <label class="field">
+                                                                <span class="field-label">День</span>
+                                                                <select bind:value={con.day_of_week}>
+                                                                        <option value={null}>— любой день —</option>
+                                                                        {#each Array(days) as _, di}
+                                                                                <option value={di}>{dayName(di)}</option>
+                                                                        {/each}
+                                                                </select>
+                                                        </label>
                                                 {/if}
-                                                <label class="chk"><input type="checkbox" bind:checked={con.is_hard} /> жёсткое</label>
+                                                {#if constraintFields(con.type).slots}
+                                                        <label class="field">
+                                                                <span class="field-label">Слот с</span>
+                                                                <select bind:value={con.timeslot_start}>
+                                                                        <option value={null}>— любой —</option>
+                                                                        {#each Array(slots) as _, si}
+                                                                                <option value={si}>{slotLabel(si)}</option>
+                                                                        {/each}
+                                                                </select>
+                                                        </label>
+                                                        <label class="field">
+                                                                <span class="field-label">Слот по</span>
+                                                                <select bind:value={con.timeslot_end}>
+                                                                        <option value={null}>— любой —</option>
+                                                                        {#each Array(slots) as _, si}
+                                                                                <option value={si}>{slotLabel(si)}</option>
+                                                                        {/each}
+                                                                </select>
+                                                        </label>
+                                                {/if}
+                                                {#if constraintFields(con.type).value}
+                                                        <label class="field">
+                                                                <span class="field-label">{constraintFields(con.type).valueLabel}</span>
+                                                                <input type="number" min="0" max="20" bind:value={con.weight} />
+                                                        </label>
+                                                {/if}
+                                                <label class="chk"><input type="checkbox" bind:checked={con.is_hard} /> 🔒 жёсткое</label>
                                                 <button class="primary" on:click={addConstraint}>+ Добавить</button>
                                         </div>
-                                        <ul class="list">{#each constraints as x}<li>{x.type} → {x.entity_type}#{x.entity_id} {x.is_hard ? "жёсткое" : "мягкое"}<button class="danger sm" on:click={() => removeConstraint(x.id)}>✕</button></li>{/each}</ul>
+                                        <p class="hint">Поля «день», «слот с/по» показываются только когда они нужны для выбранного типа. «любой день» или «любой слот» = без ограничения по этому параметру.</p>
+                                        <ul class="list constraints-list">
+                                                {#each constraints as x}
+                                                        <li>
+                                                                <span class="con-summary">{constraintSummary(x)}</span>
+                                                                <button class="danger sm" on:click={() => removeConstraint(x.id)}>✕</button>
+                                                        </li>
+                                                {/each}
+                                        </ul>
                                 </section>
                         {:else if tab === "settings"}
                                 <section class="card">
@@ -1121,6 +1264,11 @@
         button.mini { padding: 4px 8px; font-size: 12px; background: #f1f5f9; }
         button.mini:hover { background: #e2e8f0; }
         .chk { display: inline-flex; align-items: center; gap: 5px; font-size: 13px; color: #475569; }
+        .constraints-form { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end; }
+        .field { display: flex; flex-direction: column; gap: 2px; }
+        .field-label { font-size: 11px; color: #64748b; font-weight: 500; text-transform: uppercase; letter-spacing: 0.5px; }
+        .constraints-list li { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+        .con-summary { flex: 1; line-height: 1.4; }
         .chk.warn { color: #b45309; }
         .badge-warn { display: inline-block; background: #fde68a; color: #92400e; padding: 1px 6px; border-radius: 6px; font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
         .chk input { width: auto; }
