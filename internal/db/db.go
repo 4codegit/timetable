@@ -462,14 +462,16 @@ func (s *Store) MoveEntry(id, day, slot int) error {
 	return err
 }
 
-// SwapEntries atomically swaps the day/slot of two schedule entries within a
-// single transaction, preventing half-completed swaps on error.
+// SwapEntries atomically swaps two schedule entries' day/slot in one transaction.
+// Semantics: after this call, entry id1 is at (day1, slot1) and entry id2 is at
+// (day2, slot2). This matches the frontend's mental model of "src moves to the
+// target cell, target moves to the source cell".
 func (s *Store) SwapEntries(id1, day1, slot1, id2, day2, slot2 int) error {
 	return s.WithTx(func(tx *Store) error {
-		if _, err := tx.db.Exec(`UPDATE schedule_entries SET day_of_week=?, timeslot=? WHERE id=?`, day1, slot1, id2); err != nil {
+		if _, err := tx.db.Exec(`UPDATE schedule_entries SET day_of_week=?, timeslot=? WHERE id=?`, day1, slot1, id1); err != nil {
 			return err
 		}
-		if _, err := tx.db.Exec(`UPDATE schedule_entries SET day_of_week=?, timeslot=? WHERE id=?`, day2, slot2, id1); err != nil {
+		if _, err := tx.db.Exec(`UPDATE schedule_entries SET day_of_week=?, timeslot=? WHERE id=?`, day2, slot2, id2); err != nil {
 			return err
 		}
 		return nil

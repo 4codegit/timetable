@@ -245,6 +245,14 @@ func (a *App) ListSchedule(schoolID int) ([]domain.ScheduleEntry, error) {
 	return a.store.ListSchedule(schoolID)
 }
 
+// HasPreciseSolver reports whether the running binary was compiled with the
+// OR-Tools CP-SAT solver (-tags ortools). The frontend uses this to display
+// an accurate badge / warning instead of falsely claiming "CP-SAT enabled"
+// when the pure-Go fallback is what actually runs.
+func (a *App) HasPreciseSolver() bool {
+	return solver.HasPreciseSolver()
+}
+
 // MoveEntry relocates a schedule entry after a manual drag-and-drop edit.
 func (a *App) MoveEntry(id, day, slot int) error {
 	return a.store.MoveEntry(id, day, slot)

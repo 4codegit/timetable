@@ -235,6 +235,77 @@ func TestImportAllClearsExistingData(t *testing.T) {
 	}
 }
 
+// TestSwapEntriesIntegration drives the App-layer SwapEntries exactly the way
+// the frontend does after a drag-and-drop: src is at (srcDay, srcSlot), target
+// is at (dstDay, dstSlot). After the call the two entries must have exchanged
+// their coordinates. This is a regression test for the silent-no-op swap bug
+// that went unnoticed because the unit test was missing.
+func TestSwapEntriesIntegration(t *testing.T) {
+	a := newTestApp(t)
+	sc, err := a.CreateSchool("Swap Integration")
+	if err != nil {
+		t.Fatalf("CreateSchool: %v", err)
+	}
+	id := sc.ID
+
+	te, _ := a.CreateTeacher(domain.Teacher{SchoolID: id, Name: "Иванов", MaxHoursPerWeek: 30})
+	a.CreateSubject(domain.Subject{SchoolID: id, Name: "Математика"})
+	a.CreateClass(domain.SchoolClass{SchoolID: id, Name: "10А"})
+	a.CreateRoom(domain.Room{SchoolID: id, Name: "301"})
+	lesson, err := a.CreateLesson(domain.Lesson{SchoolID: id, ClassID: 1, SubjectID: 1, TeacherID: te.ID, HoursPerWeek: 5, MinGapDays: 1})
+	if err != nil {
+		t.Fatalf("CreateLesson: %v", err)
+	}
+
+	// Seed two schedule entries at distinct cells.
+	if err := a.store.ReplaceSchedule(id, []domain.ScheduleEntry{
+		{SchoolID: id, LessonID: lesson.ID, ClassID: 1, TeacherID: te.ID, SubjectID: 1, RoomID: 1, DayOfWeek: 1, Timeslot: 2},
+		{SchoolID: id, LessonID: lesson.ID, ClassID: 1, TeacherID: te.ID, SubjectID: 1, RoomID: 1, DayOfWeek: 3, Timeslot: 4},
+	}); err != nil {
+		t.Fatalf("ReplaceSchedule: %v", err)
+	}
+	before, _ := a.ListSchedule(id)
+	if len(before) != 2 {
+		t.Fatalf("expected 2 entries, got %d", len(before))
+	}
+	var idA, idB int
+	for _, e := range before {
+		if e.DayOfWeek == 1 && e.Timeslot == 2 {
+			idA = e.ID
+		}
+		if e.DayOfWeek == 3 && e.Timeslot == 4 {
+			idB = e.ID
+		}
+	}
+	if idA == 0 || idB == 0 {
+		t.Fatalf("could not locate seeded entries: %+v", before)
+	}
+
+	// Frontend calls: src.id (=A) should end at (3,4); target.id (=B) should end at (1,2).
+	if err := a.SwapEntries(idA, 3, 4, idB, 1, 2); err != nil {
+		t.Fatalf("SwapEntries: %v", err)
+	}
+	after, _ := a.ListSchedule(id)
+	for _, e := range after {
+		if e.ID == idA && (e.DayOfWeek != 3 || e.Timeslot != 4) {
+			t.Errorf("A should be at (3,4), got (%d,%d)", e.DayOfWeek, e.Timeslot)
+		}
+		if e.ID == idB && (e.DayOfWeek != 1 || e.Timeslot != 2) {
+			t.Errorf("B should be at (1,2), got (%d,%d)", e.DayOfWeek, e.Timeslot)
+		}
+	}
+}
+
+// TestHasPreciseSolver ensures the boolean is exposed at the App layer so the
+// frontend can show an accurate "OR-Tools available" badge. The default build
+// (no -tags ortools) must report false.
+func TestHasPreciseSolver(t *testing.T) {
+	a := newTestApp(t)
+	if a.HasPreciseSolver() {
+		t.Fatal("default build (no -tags ortools) should report HasPreciseSolver=false")
+	}
+}
+
 func containsLine(s, sub string) bool {
 	for _, line := range splitLines(s) {
 		if line == sub {

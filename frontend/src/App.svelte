@@ -6,7 +6,7 @@
                 CreateLesson, ListLessons, DeleteLesson, UpdateLesson,
                 CreateConstraint, ListConstraints, DeleteConstraint,
                 DeleteTeacher, DeleteSubject, DeleteClass, DeleteRoom, DeleteScheduleEntry, SaveExport,
-                Generate, GeneratePrecise, MoveEntry, SwapEntries, ReplaceSchedule, ListSchedule, ExportAll, ImportAll, ScheduleCSV, ExportRefsCSV, ImportRefsCSV, GetSchoolSettings, UpdateSchoolSettings
+                Generate, GeneratePrecise, MoveEntry, SwapEntries, ReplaceSchedule, ListSchedule, ExportAll, ImportAll, ScheduleCSV, ExportRefsCSV, ImportRefsCSV, GetSchoolSettings, UpdateSchoolSettings, HasPreciseSolver
         } from "../wailsjs/go/main/App";
         import { jsPDF } from "jspdf";
         import { onMount } from "svelte";
@@ -15,7 +15,7 @@
         let activeSchoolID = 0;
         let newSchoolName = "Моя школа";
         let tab = "refs";
-        const APP_VERSION = "1.6.15";
+        const APP_VERSION = "1.6.16";
         let msg = "";
 
         let teachers = [], subjects = [], classes = [], rooms = [], lessons = [], constraints = [], schedule = [];
@@ -33,6 +33,14 @@
         let bellPeriods = [];
         let genResult = null;
         let usePrecise = false;
+        // hasPreciseSolver is loaded once from the backend so the UI can tell the
+        // user the truth: if the binary was NOT compiled with -tags ortools, the
+        // "точный CP-SAT (OR-Tools)" checkbox silently runs the pure-Go fallback.
+        let hasPreciseSolver = true;
+        async function detectPreciseSolver() {
+                try { hasPreciseSolver = await HasPreciseSolver(); }
+                catch (e) { hasPreciseSolver = true; /* old binary: assume yes */ }
+        }
         let viewMode = "class";
         $: rows = viewMode === "teacher"
                 ? teachers.map((t) => ({ id: t.id, label: t.name }))
@@ -245,7 +253,7 @@
         async function removeTeacher(id) { if (!await confirmAction("Удалить учителя? Все его уроки тоже будут удалены.")) return; await pushHistory(); await DeleteTeacher(id); await reloadRefs(); flash("Учитель удалён"); }
         async function removeSubject(id) { if (!await confirmAction("Удалить предмет? Связанные уроки тоже будут удалены.")) return; await pushHistory(); await DeleteSubject(id); await reloadRefs(); flash("Предмет удалён"); }
         async function removeClass(id) { if (!await confirmAction("Удалить класс? Все уроки и расписание класса будут удалены.")) return; await pushHistory(); await DeleteClass(id); await reloadRefs(); flash("Класс удалён"); }
-        async function removeRoom(id) { if (!await confirmAction("Удалить кабинет?")) return; await DeleteRoom(id); await reloadRefs(); flash("Кабинет удалён"); }
+        async function removeRoom(id) { if (!await confirmAction("Удалить кабинет? Связанные ячейки расписания тоже будут удалены.")) return; await pushHistory(); await DeleteRoom(id); await reloadRefs(); await reloadSchedule(); flash("Кабинет удалён"); }
         async function removeConstraint(id) { await DeleteConstraint(id); await reloadRefs(); flash("Ограничение удалено"); }
         async function removeEntry(id) { await pushHistory(); await DeleteScheduleEntry(id); await reloadSchedule(); }
 
@@ -255,7 +263,11 @@
                 const occurrences = lessons.reduce((a, l) => a + (l.hours_per_week || 0), 0);
                 if (!usePrecise && occurrences > 200) {
                         usePrecise = true;
-                        flash("Крупная школа: включён точный CP-SAT (OR-Tools).");
+                        if (hasPreciseSolver) {
+                                flash("Крупная школа: включён точный CP-SAT (OR-Tools).");
+                        } else {
+                                flash("Крупная школа: OR-Tools недоступен в этой сборке — используется быстрый эвристический решатель (может не разместить все уроки).");
+                        }
                 }
                 try {
                         genResult = (usePrecise ? await GeneratePrecise(activeSchoolID, days, slots) : await Generate(activeSchoolID, days, slots)) || {};
@@ -383,7 +395,7 @@
                 window.removeEventListener("pointerup", onPointerUp);
                 window.removeEventListener("pointercancel", onPointerCancel);
         }
-        onMount(() => { attachDragListeners(); return () => detachDragListeners(); });
+        onMount(() => { attachDragListeners(); detectPreciseSolver(); return () => detachDragListeners(); });
         function cellAt(kind, id, day, slot) {
                 const e = schedule.find((en) => {
                         let match;
@@ -708,11 +720,6 @@
         function dayName(d) { return ["Пн","Вт","Ср","Чт","Пт","Сб","Вс"][d] || ("Д" + (d + 1)); }
         function sI(i) { return i + 1; }
         function periodLabel(si) { const p = bellPeriods[si]; return p && p.start ? p.start + "–" + p.end : ""; }
-        function cellFor(classID, day, slot) {
-                const e = schedule.find(en => en.class_id === classID && en.day_of_week === day && en.timeslot === slot);
-                if (!e) return "";
-                return subjName(subjects, e.subject_id) + " (" + teachName(teachers, e.teacher_id) + ") " + (rooms.find(r => r.id === e.room_id)?.name || "");
-        }
 
         loadSchools();
 </script>
@@ -926,7 +933,7 @@
                                                 <label>Слотов: <input class="num" type="number" bind:value={slots} /></label>
                                                 <button class="primary" on:click={generate}>⚙ Сгенерировать</button>
                                                 <button on:click={undo}>↶ Отменить</button>
-                                                <label class="chk"><input type="checkbox" bind:checked={usePrecise} /> точный CP-SAT (OR-Tools)</label>
+                                                <label class="chk" class:warn={!hasPreciseSolver} title={hasPreciseSolver ? "OR-Tools CP-SAT доступен в этой сборке" : "OR-Tools CP-SAT НЕ скомпилирован в эту сборку — будет использован быстрый эвристический решатель"}><input type="checkbox" bind:checked={usePrecise} /> точный CP-SAT (OR-Tools){#if !hasPreciseSolver} <span class="badge-warn">недоступно</span>{/if}</label>
                                                 <span class="sep"></span>
                                                 <label>Вид:
                                                         <select bind:value={viewMode}>
@@ -1030,7 +1037,7 @@
 
                 {#if saveModal}
                         <div class="modal-backdrop" role="button" tabindex="-1" on:click={cancelSave} on:keydown={(e) => { if (e.key === 'Escape') cancelSave(); }}>
-                                <div class="modal" role="dialog" tabindex="0" on:click|stopPropagation>
+                                <div class="modal" role="dialog" tabindex="0" on:click|stopPropagation on:keydown|stopPropagation>
                                         <h3>Сохранить файл</h3>
                                         <p class="muted">Файл будет записан в папку ~/Downloads</p>
                                         <input class="modal-input" bind:value={saveModal.filename} placeholder="имя файла" on:keydown={(e) => { if (e.key === "Enter") confirmSave(); }} />
@@ -1114,6 +1121,8 @@
         button.mini { padding: 4px 8px; font-size: 12px; background: #f1f5f9; }
         button.mini:hover { background: #e2e8f0; }
         .chk { display: inline-flex; align-items: center; gap: 5px; font-size: 13px; color: #475569; }
+        .chk.warn { color: #b45309; }
+        .badge-warn { display: inline-block; background: #fde68a; color: #92400e; padding: 1px 6px; border-radius: 6px; font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
         .chk input { width: auto; }
         .row { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; align-items: center; }
 

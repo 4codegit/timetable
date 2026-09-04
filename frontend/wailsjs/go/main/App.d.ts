@@ -14,12 +14,6 @@ export function CreateRoom(arg1:domain.Room):Promise<domain.Room>;
 
 export function CreateSchool(arg1:string):Promise<domain.School>;
 
-export function DeleteSchool(arg1:number):Promise<void>;
-
-export function SchoolHasLessons(arg1:number):Promise<boolean>;
-
-export function SchoolHasSchedule(arg1:number):Promise<boolean>;
-
 export function CreateSubject(arg1:domain.Subject):Promise<domain.Subject>;
 
 export function CreateTeacher(arg1:domain.Teacher):Promise<domain.Teacher>;
@@ -33,6 +27,8 @@ export function DeleteLesson(arg1:number):Promise<void>;
 export function DeleteRoom(arg1:number):Promise<void>;
 
 export function DeleteScheduleEntry(arg1:number):Promise<void>;
+
+export function DeleteSchool(arg1:number):Promise<void>;
 
 export function DeleteSubject(arg1:number):Promise<void>;
 
@@ -49,6 +45,8 @@ export function GeneratePrecise(arg1:number,arg2:number,arg3:number):Promise<sol
 export function GetSchoolSettings(arg1:number):Promise<string>;
 
 export function Greet(arg1:string):Promise<string>;
+
+export function HasPreciseSolver():Promise<boolean>;
 
 export function ImportAll(arg1:string):Promise<void>;
 
@@ -72,8 +70,6 @@ export function ListTeachers(arg1:number):Promise<Array<domain.Teacher>>;
 
 export function MoveEntry(arg1:number,arg2:number,arg3:number):Promise<void>;
 
-export function SwapEntries(arg1:number,arg2:number,arg3:number,arg4:number,arg5:number,arg6:number):Promise<void>;
-
 export function ReplaceSchedule(arg1:number,arg2:Array<domain.ScheduleEntry>):Promise<void>;
 
 export function SaveExport(arg1:string,arg2:string):Promise<string>;
@@ -83,6 +79,12 @@ export function SaveFile(arg1:string,arg2:string):Promise<void>;
 export function SaveFileWithDialog(arg1:string):Promise<string>;
 
 export function ScheduleCSV(arg1:number,arg2:number,arg3:number):Promise<string>;
+
+export function SchoolHasLessons(arg1:number):Promise<boolean>;
+
+export function SchoolHasSchedule(arg1:number):Promise<boolean>;
+
+export function SwapEntries(arg1:number,arg2:number,arg3:number,arg4:number,arg5:number,arg6:number):Promise<void>;
 
 export function UpdateLesson(arg1:domain.Lesson):Promise<domain.Lesson>;
 

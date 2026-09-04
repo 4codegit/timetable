@@ -657,6 +657,15 @@ func sharesStudent(ss map[int][]int, a, b int) bool {
 // when the binary is compiled with `-tags ortools`. It is nil otherwise.
 var preciseSolver func(in SolveInput, parallelism int, timeout time.Duration) (Result, bool)
 
+// HasPreciseSolver reports whether the running binary was compiled with the
+// OR-Tools CP-SAT solver (-tags ortools). When false, SolvePrecise silently
+// falls back to the pure-Go backtracking solver. The frontend uses this to
+// tell the user the truth instead of flashing "CP-SAT enabled" when the
+// heavy C++ dependency is not actually linked in.
+func HasPreciseSolver() bool {
+	return preciseSolver != nil
+}
+
 // SolvePrecise prefers the OR-Tools CP-SAT solver when compiled in; otherwise falls back to the
 // pure-Go backtracking solver so the default build always works.
 func SolvePrecise(ctx context.Context, in SolveInput, parallelism int, timeout time.Duration) Result {

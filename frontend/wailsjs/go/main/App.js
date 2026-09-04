@@ -22,18 +22,6 @@ export function CreateSchool(arg1) {
   return window['go']['main']['App']['CreateSchool'](arg1);
 }
 
-export function DeleteSchool(arg1) {
-  return window['go']['main']['App']['DeleteSchool'](arg1);
-}
-
-export function SchoolHasLessons(arg1) {
-  return window['go']['main']['App']['SchoolHasLessons'](arg1);
-}
-
-export function SchoolHasSchedule(arg1) {
-  return window['go']['main']['App']['SchoolHasSchedule'](arg1);
-}
-
 export function CreateSubject(arg1) {
   return window['go']['main']['App']['CreateSubject'](arg1);
 }
@@ -60,6 +48,10 @@ export function DeleteRoom(arg1) {
 
 export function DeleteScheduleEntry(arg1) {
   return window['go']['main']['App']['DeleteScheduleEntry'](arg1);
+}
+
+export function DeleteSchool(arg1) {
+  return window['go']['main']['App']['DeleteSchool'](arg1);
 }
 
 export function DeleteSubject(arg1) {
@@ -92,6 +84,10 @@ export function GetSchoolSettings(arg1) {
 
 export function Greet(arg1) {
   return window['go']['main']['App']['Greet'](arg1);
+}
+
+export function HasPreciseSolver() {
+  return window['go']['main']['App']['HasPreciseSolver']();
 }
 
 export function ImportAll(arg1) {
@@ -138,10 +134,6 @@ export function MoveEntry(arg1, arg2, arg3) {
   return window['go']['main']['App']['MoveEntry'](arg1, arg2, arg3);
 }
 
-export function SwapEntries(arg1, arg2, arg3, arg4, arg5, arg6) {
-  return window['go']['main']['App']['SwapEntries'](arg1, arg2, arg3, arg4, arg5, arg6);
-}
-
 export function ReplaceSchedule(arg1, arg2) {
   return window['go']['main']['App']['ReplaceSchedule'](arg1, arg2);
 }
@@ -160,6 +152,18 @@ export function SaveFileWithDialog(arg1) {
 
 export function ScheduleCSV(arg1, arg2, arg3) {
   return window['go']['main']['App']['ScheduleCSV'](arg1, arg2, arg3);
+}
+
+export function SchoolHasLessons(arg1) {
+  return window['go']['main']['App']['SchoolHasLessons'](arg1);
+}
+
+export function SchoolHasSchedule(arg1) {
+  return window['go']['main']['App']['SchoolHasSchedule'](arg1);
+}
+
+export function SwapEntries(arg1, arg2, arg3, arg4, arg5, arg6) {
+  return window['go']['main']['App']['SwapEntries'](arg1, arg2, arg3, arg4, arg5, arg6);
 }
 
 export function UpdateLesson(arg1) {
