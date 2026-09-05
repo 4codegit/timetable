@@ -321,15 +321,30 @@
                 try {
                         if (target) {
                                 await SwapEntries(src.id, day, slot, target.id, src.day_of_week, src.timeslot);
+                                // Update the displayed grid before the database refresh.  This makes a
+                                // successful drag visible even when a slow Wails/SQLite round trip follows.
+                                schedule = schedule.map((en) => en.id === src.id
+                                        ? { ...en, day_of_week: day, timeslot: slot }
+                                        : en.id === target.id
+                                        ? { ...en, day_of_week: src.day_of_week, timeslot: src.timeslot }
+                                        : en);
+                                recomputeConflicts();
                                 flash(`✓ Поменяли местами: ${cellLabelShort(src)} (${dayName(src.day_of_week)} П${src.timeslot + 1}) ⟷ ${cellLabelShort(target)} (${dayName(day)} П${slot + 1})`);
                         } else {
                                 await MoveEntry(id, day, slot);
+                                // Do the same for a move into an empty cell; reloadSchedule below still
+                                // reconciles the local view with the persisted data.
+                                schedule = schedule.map((en) => en.id === id
+                                        ? { ...en, day_of_week: day, timeslot: slot }
+                                        : en);
+                                recomputeConflicts();
                                 flash(`✓ Перемещено: ${cellLabelShort(src)} → ${dayName(day)} П${slot + 1}`);
                         }
                 } catch (err) {
                         flash(`⚠ Не удалось переместить: ${err && err.message ? err.message : err}`);
                 }
-                await reloadSchedule();
+                try { await reloadSchedule(); }
+                catch (err) { flash("Изменение сохранено, но не удалось обновить таблицу: " + (err && err.message ? err.message : err)); }
         }
         let selectedEntry = null;
         let pendingDrag = null;
@@ -411,14 +426,17 @@
         // Attach pointer listeners to window directly (more reliable in the Wails
         // webview than the <svelte:window> directive) and clean up on destroy.
         function attachDragListeners() {
-                window.addEventListener("pointermove", onPointerMove);
-                window.addEventListener("pointerup", onPointerUp);
-                window.addEventListener("pointercancel", onPointerCancel);
+                // Capture phase is important in the embedded Wails webview: a table
+                // cell can consume pointerup, otherwise the toast is shown but the
+                // actual drop handler is never reached reliably.
+                document.addEventListener("pointermove", onPointerMove, true);
+                document.addEventListener("pointerup", onPointerUp, true);
+                document.addEventListener("pointercancel", onPointerCancel, true);
         }
         function detachDragListeners() {
-                window.removeEventListener("pointermove", onPointerMove);
-                window.removeEventListener("pointerup", onPointerUp);
-                window.removeEventListener("pointercancel", onPointerCancel);
+                document.removeEventListener("pointermove", onPointerMove, true);
+                document.removeEventListener("pointerup", onPointerUp, true);
+                document.removeEventListener("pointercancel", onPointerCancel, true);
         }
         onMount(() => { attachDragListeners(); detectPreciseSolver(); return () => detachDragListeners(); });
         function cellAt(kind, id, day, slot) {
@@ -466,6 +484,10 @@
                 try {
                 const kind = exportMode === "school" ? "class" : exportMode;
                 const list = entityRows(kind);
+                if (!list.length) {
+                        flash("PDF не создан: нет строк расписания для экспорта.");
+                        return;
+                }
                 const daysN = pdfWeekdaysOnly ? Math.min(days, 5) : days;
                 const land = orientation === "landscape";
                 const doc = new jsPDF({ orientation: land ? "landscape" : "portrait", unit: "mm", format: pageSize.toLowerCase() });
@@ -531,7 +553,17 @@
                                 if (lx > pageW - 30) { lx = margin; ly -= 5; }
                         }
                 }
-                const base64 = doc.output("datauristring").split(",")[1] || "";
+                // datauristring is unreliable in some WebKit/Wails builds and can
+                // yield a syntactically valid but empty PDF. Encode the PDF bytes
+                // directly instead.
+                const bytes = new Uint8Array(doc.output("arraybuffer"));
+                let binary = "";
+                const chunk = 0x8000;
+                for (let offset = 0; offset < bytes.length; offset += chunk) {
+                        binary += String.fromCharCode(...bytes.subarray(offset, offset + chunk));
+                }
+                const base64 = btoa(binary);
+                if (!base64) throw new Error("PDF не содержит данных");
                 const defName = "Расписание_" + fileSlug(pdfSchoolName()) + "_" + new Date().toISOString().slice(0, 10) + ".pdf";
                 try {
                         await saveFile(defName, base64, "application/pdf", true);
