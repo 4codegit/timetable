@@ -1,16 +1,23 @@
-# README
+# TimeTable
 
-## About
+Настольное приложение для составления школьского расписания: классы,
+учителя, предметы, кабинеты, ограничения, генерация и ручная правка.
 
-This is the official Wails Svelte-TS template.
+## Возможности
 
-## Live Development
+- генерация расписания и отчёт о конфликтах;
+- перенос и обмен уроков мышью или кликом по ячейкам;
+- экспорт расписания в PDF и CSV;
+- экспорт полной резервной копии в JSON и безопасное восстановление;
+- восстановление сохраняет настройки, подгруппы, ограничения и готовое
+  расписание, при этом не затирает другую школу при совпадении ID.
 
-To run in live development mode, run `wails dev` in the project directory. This will run a Vite development
-server that will provide very fast hot reload of your frontend changes. If you want to develop in a browser
-and have access to your Go methods, there is also a dev server that runs on http://localhost:34115. Connect
-to this in your browser, and you can call your Go code from devtools.
+## Разработка и проверка
 
-## Building
+```sh
+cd frontend && npm ci && npm run check && npm run build
+GOCACHE=/tmp/timetable-go-cache go test ./...
+```
 
-To build a redistributable, production mode package, use `wails build`.
+Для запуска в режиме разработки используйте `wails dev`; для production-сборки
+— `wails build`.

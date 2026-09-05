@@ -15,7 +15,7 @@
         let activeSchoolID = 0;
         let newSchoolName = "Моя школа";
         let tab = "refs";
-        const APP_VERSION = "1.6.17";
+        const APP_VERSION = "1.6.18";
         let msg = "";
 
         let teachers = [], subjects = [], classes = [], rooms = [], lessons = [], constraints = [], schedule = [];
@@ -464,9 +464,13 @@
         }
         async function importJSON(ev) {
                 const text = await ev.target.files[0].text();
-                await ImportAll(text);
+                const restored = await ImportAll(text);
+                // An imported backup can create a new school with a different
+                // local ID. Show that restored school immediately.
+                if (restored && restored.id) activeSchoolID = restored.id;
                 await loadSchools();
                 await reloadRefs();
+                await reloadSchedule();
                 flash("Импортировано");
         }
         async function exportCSV() {

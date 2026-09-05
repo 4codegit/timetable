@@ -153,6 +153,32 @@ func (s *Store) ListSchools() ([]domain.School, error) {
 	return out, nil
 }
 
+// GetSchool returns one school or sql.ErrNoRows when it does not exist.
+func (s *Store) GetSchool(id int) (*domain.School, error) {
+	var sc domain.School
+	err := s.db.QueryRow(`SELECT id, name, settings_json FROM schools WHERE id=?`, id).Scan(&sc.ID, &sc.Name, &sc.SettingsJSON)
+	if err != nil {
+		return nil, err
+	}
+	return &sc, nil
+}
+
+// UpdateSchool restores the user-facing school metadata during an import.
+func (s *Store) UpdateSchool(sc domain.School) error {
+	res, err := s.db.Exec(`UPDATE schools SET name=?, settings_json=? WHERE id=?`, sc.Name, orDefault(sc.SettingsJSON, "{}"), sc.ID)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n != 1 {
+		return fmt.Errorf("school %d not found", sc.ID)
+	}
+	return nil
+}
+
 func (s *Store) GetSchoolSettings(id int) (string, error) {
 	var js string
 	err := s.db.QueryRow(`SELECT settings_json FROM schools WHERE id = ?`, id).Scan(&js)
@@ -257,6 +283,13 @@ func (s *Store) ListClasses(schoolID int) ([]domain.SchoolClass, error) {
 		out = append(out, c)
 	}
 	return out, nil
+}
+
+// UpdateClassSubgroup restores a class' optional parent after all imported
+// classes have received their new IDs.
+func (s *Store) UpdateClassSubgroup(id int, parent *int) error {
+	_, err := s.db.Exec(`UPDATE classes SET subgroup_of=? WHERE id=?`, parent, id)
+	return err
 }
 
 // ---- Rooms ----
@@ -458,8 +491,18 @@ func (s *Store) ListSchedule(schoolID int) ([]domain.ScheduleEntry, error) {
 
 // MoveEntry relocates a single schedule entry to a new day/slot (manual DnD edit).
 func (s *Store) MoveEntry(id, day, slot int) error {
-	_, err := s.db.Exec(`UPDATE schedule_entries SET day_of_week=?, timeslot=? WHERE id=?`, day, slot, id)
-	return err
+	res, err := s.db.Exec(`UPDATE schedule_entries SET day_of_week=?, timeslot=? WHERE id=?`, day, slot, id)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n != 1 {
+		return fmt.Errorf("schedule entry %d not found", id)
+	}
+	return nil
 }
 
 // SwapEntries atomically swaps two schedule entries' day/slot in one transaction.
@@ -467,12 +510,31 @@ func (s *Store) MoveEntry(id, day, slot int) error {
 // (day2, slot2). This matches the frontend's mental model of "src moves to the
 // target cell, target moves to the source cell".
 func (s *Store) SwapEntries(id1, day1, slot1, id2, day2, slot2 int) error {
+	if id1 == id2 {
+		return errors.New("cannot swap a schedule entry with itself")
+	}
 	return s.WithTx(func(tx *Store) error {
-		if _, err := tx.db.Exec(`UPDATE schedule_entries SET day_of_week=?, timeslot=? WHERE id=?`, day1, slot1, id1); err != nil {
+		res, err := tx.db.Exec(`UPDATE schedule_entries SET day_of_week=?, timeslot=? WHERE id=?`, day1, slot1, id1)
+		if err != nil {
 			return err
 		}
-		if _, err := tx.db.Exec(`UPDATE schedule_entries SET day_of_week=?, timeslot=? WHERE id=?`, day2, slot2, id2); err != nil {
+		n, err := res.RowsAffected()
+		if err != nil {
 			return err
+		}
+		if n != 1 {
+			return fmt.Errorf("schedule entry %d not found", id1)
+		}
+		res, err = tx.db.Exec(`UPDATE schedule_entries SET day_of_week=?, timeslot=? WHERE id=?`, day2, slot2, id2)
+		if err != nil {
+			return err
+		}
+		n, err = res.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if n != 1 {
+			return fmt.Errorf("schedule entry %d not found", id2)
 		}
 		return nil
 	})
@@ -481,25 +543,35 @@ func (s *Store) SwapEntries(id1, day1, slot1, id2, day2, slot2 int) error {
 // ReplaceSchedule clears and re-inserts the whole schedule inside a single
 // transaction so a failure never leaves an empty (half-cleared) schedule.
 func (s *Store) ReplaceSchedule(schoolID int, entries []domain.ScheduleEntry) error {
+	// ImportAll already owns a transaction. Starting another SQLite transaction
+	// there causes "database is locked", so reuse the current transaction when
+	// Store was created by WithTx.
+	if _, inTransaction := s.db.(*sql.Tx); inTransaction {
+		return s.replaceSchedule(schoolID, entries)
+	}
 	return s.WithTx(func(tx *Store) error {
-		if _, err := tx.db.Exec(`DELETE FROM schedule_entries WHERE school_id=?`, schoolID); err != nil {
-			return err
-		}
-		if len(entries) == 0 {
-			return nil
-		}
-		stmt, err := tx.db.Prepare(`INSERT INTO schedule_entries (school_id, lesson_id, class_id, teacher_id, subject_id, room_id, day_of_week, timeslot, week_type) VALUES (?,?,?,?,?,?,?,?,?)`)
-		if err != nil {
-			return err
-		}
-		defer stmt.Close()
-		for _, e := range entries {
-			if _, err := stmt.Exec(e.SchoolID, e.LessonID, e.ClassID, e.TeacherID, e.SubjectID, e.RoomID, e.DayOfWeek, e.Timeslot, e.WeekType); err != nil {
-				return err
-			}
-		}
-		return nil
+		return tx.replaceSchedule(schoolID, entries)
 	})
+}
+
+func (s *Store) replaceSchedule(schoolID int, entries []domain.ScheduleEntry) error {
+	if _, err := s.db.Exec(`DELETE FROM schedule_entries WHERE school_id=?`, schoolID); err != nil {
+		return err
+	}
+	if len(entries) == 0 {
+		return nil
+	}
+	stmt, err := s.db.Prepare(`INSERT INTO schedule_entries (school_id, lesson_id, class_id, teacher_id, subject_id, room_id, day_of_week, timeslot, week_type) VALUES (?,?,?,?,?,?,?,?,?)`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+	for _, e := range entries {
+		if _, err := stmt.Exec(e.SchoolID, e.LessonID, e.ClassID, e.TeacherID, e.SubjectID, e.RoomID, e.DayOfWeek, e.Timeslot, e.WeekType); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func orDefault(v, def string) string {

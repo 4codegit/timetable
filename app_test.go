@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"path/filepath"
 	"testing"
@@ -220,7 +221,7 @@ func TestImportAllClearsExistingData(t *testing.T) {
                 "lessons": [],
                 "constraints": []
         }`
-	err = a.ImportAll(snap)
+	_, err = a.ImportAll(snap)
 	if err != nil {
 		t.Fatalf("ImportAll: %v", err)
 	}
@@ -232,6 +233,121 @@ func TestImportAllClearsExistingData(t *testing.T) {
 	}
 	if teachers2[0].Name != "Новый Учитель" {
 		t.Fatalf("expected 'Новый Учитель', got %q", teachers2[0].Name)
+	}
+}
+
+// TestExportImportRoundTripPreservesSchedule verifies that a JSON backup is a
+// real backup: it can be restored into a different database even though every
+// generated ID changes.  It covers the links most likely to be silently lost:
+// settings, subgroups, constraints, lessons, and schedule entries.
+func TestExportImportRoundTripPreservesSchedule(t *testing.T) {
+	source := newTestApp(t)
+	// Ensure the exported school is not the first record, as it commonly won't
+	// be in the destination database either.
+	if _, err := source.CreateSchool("Черновик"); err != nil {
+		t.Fatal(err)
+	}
+	school, err := source.CreateSchool("Лицей №1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := source.UpdateSchoolSettings(school.ID, `{"days":5,"slots":7}`); err != nil {
+		t.Fatal(err)
+	}
+	teacher, err := source.CreateTeacher(domain.Teacher{SchoolID: school.ID, Name: "Иванова", MaxHoursPerWeek: 24})
+	if err != nil {
+		t.Fatal(err)
+	}
+	subject, err := source.CreateSubject(domain.Subject{SchoolID: school.ID, Name: "Математика"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	parent, err := source.CreateClass(domain.SchoolClass{SchoolID: school.ID, Name: "8А"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	child, err := source.CreateClass(domain.SchoolClass{SchoolID: school.ID, Name: "8А-1", SubgroupOf: &parent.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	room, err := source.CreateRoom(domain.Room{SchoolID: school.ID, Name: "204", Capacity: 28})
+	if err != nil {
+		t.Fatal(err)
+	}
+	lesson, err := source.CreateLesson(domain.Lesson{SchoolID: school.ID, ClassID: child.ID, SubjectID: subject.ID, TeacherID: teacher.ID, HoursPerWeek: 3, MinGapDays: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	day, from, to := 2, 1, 2
+	if _, err := source.CreateConstraint(domain.Constraint{SchoolID: school.ID, Type: "teacher_unavailable", EntityType: "teacher", EntityID: teacher.ID, DayOfWeek: &day, TimeslotStart: &from, TimeslotEnd: &to, Weight: 100, IsHard: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := source.ReplaceSchedule(school.ID, []domain.ScheduleEntry{{
+		SchoolID: school.ID, LessonID: lesson.ID, ClassID: child.ID, TeacherID: teacher.ID,
+		SubjectID: subject.ID, RoomID: room.ID, DayOfWeek: 3, Timeslot: 4,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	snapshot, err := source.ExportAll(school.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.Schedule) != 1 {
+		t.Fatalf("expected exported schedule entry, got %d", len(snapshot.Schedule))
+	}
+	// Simulate a backup whose source ID collides with an unrelated local school.
+	// Import must create a new school rather than erase that user's data.
+	snapshot.School.ID = 1
+	data, err := json.Marshal(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	destination := newTestApp(t)
+	other, err := destination.CreateSchool("Другой лицей")
+	if err != nil {
+		t.Fatal(err)
+	}
+	imported, err := destination.ImportAll(string(data))
+	if err != nil {
+		t.Fatalf("ImportAll: %v", err)
+	}
+	schools, err := destination.ListSchools()
+	if err != nil || len(schools) != 2 {
+		t.Fatalf("expected original and imported schools, got %+v (err=%v)", schools, err)
+	}
+	if imported.ID == other.ID {
+		t.Fatal("import overwrote the unrelated school with the same source ID")
+	}
+	gotSchool := *imported
+	if gotSchool.Name != "Лицей №1" || gotSchool.SettingsJSON != `{"days":5,"slots":7}` {
+		t.Fatalf("school metadata was not restored: %+v", gotSchool)
+	}
+	classes, _ := destination.ListClasses(gotSchool.ID)
+	if len(classes) != 2 {
+		t.Fatalf("expected 2 classes, got %+v", classes)
+	}
+	var restoredParent, restoredChild domain.SchoolClass
+	for _, class := range classes {
+		if class.Name == "8А" {
+			restoredParent = class
+		}
+		if class.Name == "8А-1" {
+			restoredChild = class
+		}
+	}
+	if restoredChild.SubgroupOf == nil || *restoredChild.SubgroupOf != restoredParent.ID {
+		t.Fatalf("subgroup parent was not remapped: parent=%+v child=%+v", restoredParent, restoredChild)
+	}
+	teachers, _ := destination.ListTeachers(gotSchool.ID)
+	constraints, _ := destination.ListConstraints(gotSchool.ID)
+	if len(teachers) != 1 || len(constraints) != 1 || constraints[0].EntityID != teachers[0].ID {
+		t.Fatalf("constraint entity was not remapped: teachers=%+v constraints=%+v", teachers, constraints)
+	}
+	entries, err := destination.ListSchedule(gotSchool.ID)
+	if err != nil || len(entries) != 1 || entries[0].ClassID != restoredChild.ID || entries[0].DayOfWeek != 3 || entries[0].Timeslot != 4 {
+		t.Fatalf("schedule was not restored: %+v (err=%v)", entries, err)
 	}
 }
 

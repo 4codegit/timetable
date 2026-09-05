@@ -48,7 +48,7 @@ export function Greet(arg1:string):Promise<string>;
 
 export function HasPreciseSolver():Promise<boolean>;
 
-export function ImportAll(arg1:string):Promise<void>;
+export function ImportAll(arg1:string):Promise<domain.School>;
 
 export function ImportRefsCSV(arg1:number,arg2:string,arg3:string):Promise<number>;
 

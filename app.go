@@ -630,10 +630,10 @@ func (a *App) ExportAll(schoolID int) (*io.Snapshot, error) {
 	return io.ExportAll(a.store, schoolID)
 }
 
-func (a *App) ImportAll(data string) error {
+func (a *App) ImportAll(data string) (*domain.School, error) {
 	snap, err := io.ParseSnapshot([]byte(data))
 	if err != nil {
-		return err
+		return nil, err
 	}
 	return io.ImportAll(a.store, snap)
 }
@@ -643,10 +643,22 @@ func (a *App) ScheduleCSV(schoolID, days, slots int) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	ts, _ := a.store.ListTeachers(schoolID)
-	cs, _ := a.store.ListClasses(schoolID)
-	rs, _ := a.store.ListRooms(schoolID)
-	subs, _ := a.store.ListSubjects(schoolID)
+	ts, err := a.store.ListTeachers(schoolID)
+	if err != nil {
+		return "", err
+	}
+	cs, err := a.store.ListClasses(schoolID)
+	if err != nil {
+		return "", err
+	}
+	rs, err := a.store.ListRooms(schoolID)
+	if err != nil {
+		return "", err
+	}
+	subs, err := a.store.ListSubjects(schoolID)
+	if err != nil {
+		return "", err
+	}
 	return io.ScheduleCSV(entries, toClassMap(cs), toTeacherMap(ts), toSubjMap(subs), toRoomMap(rs), days, slots)
 }
 
