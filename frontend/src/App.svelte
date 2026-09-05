@@ -14,7 +14,7 @@
         let activeSchoolID = 0;
         let newSchoolName = "Моя школа";
         let tab = "refs";
-        const APP_VERSION = "1.7.0";
+        const APP_VERSION = "1.8.0";
         let msg = "";
 
         let teachers = [], subjects = [], classes = [], rooms = [], lessons = [], constraints = [], schedule = [];
@@ -69,6 +69,29 @@
                 ? rows.slice(classPage * classesPerPage, classPage * classesPerPage + classesPerPage)
                 : rows;
         $: totalClassPages = Math.max(1, Math.ceil(classes.length / classesPerPage));
+
+        // Reactive grid. THE root-cause fix for the "drag & drop does nothing
+        // until you switch tabs" bug: the old template computed each cell via
+        // {@const cell = cellAt(...)} inside {#each Array(days)}. Those blocks
+        // only depended on `days`/`slots` — NOT on `schedule` — so after a move
+        // Svelte never recomputed the cells and the grid looked frozen even
+        // though the backend had already persisted the change.
+        //
+        // IMPORTANT Svelte detail: reactive dependencies are collected
+        // SYNTACTICALLY from the statement. cellAt() reads `schedule` and
+        // `conflictIDs` internally, but the compiler cannot see inside the
+        // function — so we pass them as explicit arguments to make them real
+        // dependencies. Any change to the schedule now rebuilds the grid.
+        $: grid = buildGrid(schedule, visibleRows, viewMode, days, slots, conflictIDs);
+        function buildGrid(schedule, visibleRows, viewMode, days, slots, conflictIDs) {
+                void schedule; void conflictIDs; // (dependencies — see comment above)
+                return visibleRows.map((row) => ({
+                        id: row.id,
+                        label: row.label,
+                        cells: Array.from({ length: days }, (_, di) =>
+                                Array.from({ length: slots }, (_, si) => cellAt(viewMode, row.id, di, si)))
+                }));
+        }
 
         function flash(m) { msg = m; setTimeout(() => msg = "", 3000); }
 
@@ -185,7 +208,9 @@
                         .map((t) => ({ name: t.name, max: t.max_hours_per_week, got: teacherHours[t.id] || 0 }));
                 return { conflicts, unplaced, overloads };
         }
-        $: report = computeConflictReport();
+        // Same syntactic-dependency rule as buildGrid above: pass the state
+        // this report is derived from as explicit arguments.
+        $: report = computeConflictReport(schedule, lessons, subjects, teachers, classes, rooms);
 
         let history = [];
         async function pushHistory() {
@@ -377,21 +402,43 @@
                         flash(`⚠ Не удалось переместить: ${err && err.message ? err.message : err}`);
                         return;
                 }
-                // 3. Success: do nothing. The optimistic state already matches
-                //    what the DB just persisted, so an extra reloadSchedule()
-                //    here would only add latency and risk a flicker. This is
-                //    the missing piece that caused the "navigate away and
-                //    back to see the change" symptom.
+                // 3. Success. The optimistic state already matches what the DB
+                //    just persisted, but we still quietly re-read the schedule
+                //    once so the UI is guaranteed to equal the DB (covers any
+                //    serialization nuance). The grid is fully reactive now, so
+                //    this refresh renders instantly instead of "freezing" like
+                //    the old template did.
+                try {
+                        schedule = (await ListSchedule(activeSchoolID)) || [];
+                        recomputeConflicts();
+                } catch (e) { /* keep the optimistic state on refresh failure */ }
         }
+        // ------------------------------------------------------------------
+        // Drag & Drop engine (v2).
+        //
+        // Must work inside the Wails webview (WebView2 / WKWebView) with
+        // mouse AND touch/pen. Key properties:
+        //   * setPointerCapture on the pressed cell → every later pointer
+        //     event is delivered to us no matter where the pointer goes;
+        //   * hit-testing is done with getBoundingClientRect scans, never
+        //     elementFromPoint (unreliable during pointer capture);
+        //   * the cell under the pointer is highlighted (drop-target) so the
+        //     user SEES where the lesson will land;
+        //   * movement < 6px counts as a click (select / place-to-cell);
+        //   * Escape cancels a drag in progress;
+        //   * near the viewport edges we auto-scroll the grid.
+        // ------------------------------------------------------------------
         let selectedEntry = null;
-        let pendingDrag = null;
-        let startPos = null;
+        let pendingDrag = null;   // { id, kind, rowId, day, slot, label, pointerId }
+        let startPos = null;      // pointer position where the drag started
         let dragging = false;
-        let ghost = null;
+        let ghost = null;         // { label, x, y } — floating label under the cursor
+        let dropTarget = null;    // { rowId, day, slot } — highlighted destination cell
+        let lastPointer = { x: 0, y: 0 };
+        let dropCheckPending = false;
 
-        // Engine-independent hit-test: find the schedule cell whose bounding rect
-        // contains the pointer. Avoids elementFromPoint, which is unreliable inside
-        // the Wails WebKit webview (especially during pointer capture).
+        // Engine-independent hit-test: find the schedule cell whose bounding
+        // rect contains the pointer.
         function hitCell(x, y) {
                 const tds = document.querySelectorAll("td[data-cell]");
                 for (let i = 0; i < tds.length; i++) {
@@ -401,43 +448,109 @@
                 return null;
         }
 
+        function readCellAttrs(td) {
+                const rowId = parseInt(td.getAttribute("data-row"));
+                const day = parseInt(td.getAttribute("data-day"));
+                const slot = parseInt(td.getAttribute("data-slot"));
+                if (isNaN(rowId) || isNaN(day) || isNaN(slot)) return null;
+                return { rowId, day, slot };
+        }
+
+        function setDropTargetFromPoint(x, y) {
+                if (!pendingDrag) { dropTarget = null; return; }
+                const td = hitCell(x, y);
+                const dst = td ? readCellAttrs(td) : null;
+                // Never highlight the source cell itself.
+                if (dst && dst.rowId === pendingDrag.rowId && dst.day === pendingDrag.day && dst.slot === pendingDrag.slot) {
+                        dropTarget = null;
+                        return;
+                }
+                dropTarget = dst;
+        }
+
+        // Throttle hit-testing to one scan per animation frame.
+        function scheduleDropCheck() {
+                if (dropCheckPending) return;
+                dropCheckPending = true;
+                requestAnimationFrame(() => {
+                        dropCheckPending = false;
+                        setDropTargetFromPoint(lastPointer.x, lastPointer.y);
+                });
+        }
+
+        // Auto-scroll window (vertical) and the grid container (horizontal)
+        // while dragging near an edge. The loop self-stops when dragging ends.
+        function autoScrollTick() {
+                if (!dragging) return;
+                const m = 48, sp = 14;
+                if (lastPointer.y < m) window.scrollBy(0, -sp);
+                else if (lastPointer.y > window.innerHeight - m) window.scrollBy(0, sp);
+                const sc = document.querySelector(".grid-scroll");
+                if (sc) {
+                        const r = sc.getBoundingClientRect();
+                        if (lastPointer.x > r.left && lastPointer.x < r.right) {
+                                if (lastPointer.x < r.left + m) sc.scrollLeft -= sp;
+                                else if (lastPointer.x > r.right - m) sc.scrollLeft += sp;
+                        }
+                }
+                requestAnimationFrame(autoScrollTick);
+        }
+
         function onPointerDown(e, cell, kind, rowId, day, slot) {
-                if (e.button !== 0) return;
+                if (e.pointerType === "mouse" && e.button !== 0) return;
                 if (e.target && e.target.closest && e.target.closest(".cell-x")) return;
                 e.preventDefault();
-                startPos = { x: e.clientX, y: e.clientY };
-                pendingDrag = { id: cell ? cell.id : null, kind, rowId, day, slot, label: cell ? cell.label : "" };
+                pendingDrag = { id: cell ? cell.id : null, kind, rowId, day, slot, label: cell ? cell.label : "", pointerId: e.pointerId };
                 dragging = false;
+                ghost = null;
+                dropTarget = null;
+                startPos = { x: e.clientX, y: e.clientY };
+                lastPointer = { x: e.clientX, y: e.clientY };
+                // Capture the pointer on the pressed cell: guarantees that
+                // pointermove/pointerup keep coming even when the cursor
+                // leaves the <td> (this is the piece the previous attempt was
+                // missing — without it some drags silently died mid-move).
+                try {
+                        if (e.pointerId !== undefined && e.target && e.target.setPointerCapture) {
+                                e.target.setPointerCapture(e.pointerId);
+                        }
+                } catch (err) { /* non-fatal */ }
         }
         function onPointerMove(e) {
-                if (!pendingDrag || !startPos) return;
+                if (!pendingDrag) return;
+                if (pendingDrag.pointerId !== undefined && e.pointerId !== undefined && e.pointerId !== pendingDrag.pointerId) return;
+                lastPointer = { x: e.clientX, y: e.clientY };
                 const dx = e.clientX - startPos.x, dy = e.clientY - startPos.y;
                 if (!dragging && Math.hypot(dx, dy) > 6) {
                         dragging = true;
+                        requestAnimationFrame(autoScrollTick);
                 }
                 if (dragging) {
                         ghost = { label: pendingDrag.label, x: e.clientX, y: e.clientY };
+                        scheduleDropCheck();
                 }
         }
         async function onPointerUp(e) {
-                if (!pendingDrag) { dragging = false; ghost = null; return; }
+                if (!pendingDrag) { dragging = false; ghost = null; dropTarget = null; return; }
                 const pd = pendingDrag;
-                pendingDrag = null;
                 const wasDrag = dragging;
+                const dst = dropTarget;
+                pendingDrag = null;
                 dragging = false;
                 ghost = null;
+                dropTarget = null;
                 if (wasDrag && pd.id) {
-                        const td = hitCell(e.clientX, e.clientY);
-                        if (td) {
-                                const tDay = parseInt(td.getAttribute("data-day"));
-                                const tSlot = parseInt(td.getAttribute("data-slot"));
-                                const tRow = parseInt(td.getAttribute("data-row"));
-                                const tKind = td.getAttribute("data-kind");
-                                if (!isNaN(tDay) && !isNaN(tSlot) && !isNaN(tRow)) {
-                                        if (tDay === pd.day && tSlot === pd.slot && tRow === pd.rowId) return;
-                                        try { await applyMove(pd.id, tKind, tRow, tDay, tSlot); }
-                                        catch (err) { flash("Ошибка: " + (err && err.message ? err.message : err)); }
-                                }
+                        // Prefer the highlighted target; fall back to a fresh
+                        // hit-test at the release point.
+                        let target = dst;
+                        if (!target && e.clientX !== undefined) {
+                                const td = hitCell(e.clientX, e.clientY);
+                                target = td ? readCellAttrs(td) : null;
+                        }
+                        if (target) {
+                                if (target.day === pd.day && target.slot === pd.slot && target.rowId === pd.rowId) return;
+                                try { await applyMove(pd.id, pd.kind, target.rowId, target.day, target.slot); }
+                                catch (err) { flash("Ошибка: " + (err && err.message ? err.message : err)); }
                         }
                         return;
                 }
@@ -458,22 +571,36 @@
                         selectedEntry = (selectedEntry && selectedEntry.id === pd.id) ? null : { id: pd.id };
                 }
         }
-        function onPointerCancel() { pendingDrag = null; dragging = false; ghost = null; startPos = null; }
+        function onPointerCancel() {
+                try {
+                        if (pendingDrag && pendingDrag.pointerId !== undefined) {
+                                const el = document.elementFromPoint(lastPointer.x, lastPointer.y);
+                                if (el && el.releasePointerCapture) el.releasePointerCapture(pendingDrag.pointerId);
+                        }
+                } catch (err) { /* ignore */ }
+                pendingDrag = null; dragging = false; ghost = null; dropTarget = null; startPos = null;
+        }
+        function onGlobalKeydown(e) {
+                if (e.key === "Escape") {
+                        if (dragging || pendingDrag) { pendingDrag = null; dragging = false; ghost = null; dropTarget = null; }
+                        else if (selectedEntry) selectedEntry = null;
+                }
+        }
 
-        // Attach pointer listeners to window directly (more reliable in the Wails
-        // webview than the <svelte:window> directive) and clean up on destroy.
+        // Attach pointer listeners to window in the CAPTURE phase (a table
+        // cell can otherwise consume pointerup in the embedded webview) and
+        // clean up on destroy.
         function attachDragListeners() {
-                // Capture phase is important in the embedded Wails webview: a table
-                // cell can consume pointerup, otherwise the toast is shown but the
-                // actual drop handler is never reached reliably.
                 document.addEventListener("pointermove", onPointerMove, true);
                 document.addEventListener("pointerup", onPointerUp, true);
                 document.addEventListener("pointercancel", onPointerCancel, true);
+                window.addEventListener("keydown", onGlobalKeydown, true);
         }
         function detachDragListeners() {
                 document.removeEventListener("pointermove", onPointerMove, true);
                 document.removeEventListener("pointerup", onPointerUp, true);
                 document.removeEventListener("pointercancel", onPointerCancel, true);
+                window.removeEventListener("keydown", onGlobalKeydown, true);
         }
         onMount(() => { attachDragListeners(); detectPreciseSolver(); return () => detachDragListeners(); });
         function cellAt(kind, id, day, slot) {
@@ -556,6 +683,109 @@
         }
         function fileSlug(s) {
                 return String(s).replace(/[\\/:*?"<>|]/g, "_").replace(/\s+/g, "_");
+        }
+
+        // ------------------------------------------------------------------
+        // Печать по режимам.
+        //
+        // Печать "замораживает" текущие настройки экспорта: тот же режим
+        // (exportMode — плакат / по классам / по учителям / по кабинетам),
+        // тот же формат бумаги и ориентация, те же флаги (учителя, кабинеты,
+        // будни, ч/б). При открытии модала строится чистый печатный DOM
+        // (.print-root), обычный интерфейс скрывается через @media print,
+        // а @page задаёт размер и ориентацию страницы. window.print()
+        // открывает системный диалог печати (WebView2 / Chromium).
+        // ------------------------------------------------------------------
+        let printOpen = false;
+        let printHTML = "";
+        $: printCSSValue = `
+                @page { size: ${pageSize} ${orientation}; margin: 8mm; }
+                .print-root { display: none; }
+                @media print {
+                        .app { display: none !important; }
+                        .modal-backdrop { display: none !important; }
+                        .print-root { display: block !important; }
+                }
+        `;
+        // The print CSS (@page size / orientation, print visibility) is dynamic,
+        // so it cannot live in the component style block. We maintain a
+        // dedicated style element in document.head instead — a literal style
+        // tag inside the markup would be hijacked by the Svelte preprocessor.
+        let printStyleEl = null;
+        function syncPrintCSS(css) {
+                if (!css) {
+                        if (printStyleEl) { printStyleEl.remove(); printStyleEl = null; }
+                        return;
+                }
+                if (!printStyleEl) {
+                        printStyleEl = document.createElement("style");
+                        printStyleEl.setAttribute("data-print-css", "");
+                        document.head.appendChild(printStyleEl);
+                }
+                printStyleEl.textContent = css;
+        }
+        $: syncPrintCSS(printOpen ? printCSSValue : "");
+        function printEsc(s) {
+                return String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+        }
+        function printModeTitle(m) {
+                return { school: "плакат (вся школа)", class: "по классам", teacher: "по учителям", room: "по кабинетам" }[m] || m;
+        }
+        function printCellHTML(cell) {
+                if (!cell) return "<td class='pc'></td>";
+                const subject = printEsc(subjName(subjects, cell.subject_id));
+                const teacher = pdfShowTeacher ? " <span class='t'>" + printEsc(teachName(teachers, cell.teacher_id)) + "</span>" : "";
+                const room = pdfShowRoom && cell.room_id ? " <span class='r'>" + printEsc(rooms.find((r) => r.id === cell.room_id)?.name || "") + "</span>" : "";
+                const cls = cell.conflict ? " conflict" : "";
+                const bg = (!pdfBW && !cell.conflict) ? " style='background:" + subjectColor(cell.subject_id) + "'" : "";
+                return "<td class='pf" + cls + "'" + bg + "><b>" + subject + "</b>" + teacher + room + "</td>";
+        }
+        function buildPrintHTML() {
+                const dayCount = pdfWeekdaysOnly ? Math.min(days, 5) : days;
+                const modeRows = exportMode === "teacher"
+                        ? teachers.map((t) => ({ id: t.id, label: t.name }))
+                        : exportMode === "room"
+                        ? rooms.map((r) => ({ id: r.id, label: r.name }))
+                        : classes.map((c) => ({ id: c.id, label: c.name }));
+                const modeTitle = printModeTitle(exportMode);
+                const header = "<div class='ph'><div class='pt'>" + printEsc(pdfSchoolName()) + " · " + printEsc(modeTitle) + "</div><div class='pd'>Напечатано: " + new Date().toLocaleDateString("ru-RU") + "</div></div>";
+                const thead = "<thead><tr><th class='pl'>День</th>" + Array.from({ length: slots }, (_, si) => {
+                        const pl = periodLabel(si);
+                        return "<th>П" + (si + 1) + (pl ? "<span class='tm'>" + printEsc(pl) + "</span>" : "") + "</th>";
+                }).join("") + "</tr></thead>";
+
+                if (exportMode === "school") {
+                        // Плакат: одна страница, все классы — строки «класс · день» × слоты.
+                        const body = modeRows.map((row) => Array.from({ length: dayCount }, (_, di) => {
+                                const cells = Array.from({ length: slots }, (_, si) => printCellHTML(cellAt(exportMode === "school" ? "class" : exportMode, row.id, di, si))).join("");
+                                return "<tr><td class='rl'>" + printEsc(row.label) + "<span class='rd'>" + dayName(di) + "</span></td>" + cells + "</tr>";
+                        }).join("")).join("");
+                        return "<div class='sheet poster'>" + header + "<table class='ptab'>" + thead + "<tbody>" + body + "</tbody></table></div>";
+                }
+                // По классам / учителям / кабинетам: одна страница на строку.
+                return modeRows.map((row) => {
+                        const body = Array.from({ length: dayCount }, (_, di) => {
+                                const cells = Array.from({ length: slots }, (_, si) => printCellHTML(cellAt(exportMode, row.id, di, si))).join("");
+                                return "<tr><td class='dl'>" + dayName(di) + "</td>" + cells + "</tr>";
+                        }).join("");
+                        return "<div class='sheet one'><div class='rh'>" + printEsc(row.label) + "</div>" + header + "<table class='ptab'>" + thead + "<tbody>" + body + "</tbody></table></div>";
+                }).join("");
+        }
+        function openPrint() {
+                if (!schedule.length) { flash("Расписание пусто — печатать нечего."); return; }
+                printHTML = buildPrintHTML();
+                printOpen = true;
+        }
+        function closePrint() { printOpen = false; }
+        function doPrint() {
+                // window.print() is synchronous in Chromium/WebView2: the dialog
+                // blocks until the user confirms or cancels, so the print-root
+                // is guaranteed to be in the DOM for the whole print job.
+                try {
+                        window.print();
+                } catch (e) {
+                        flash("Печать недоступна в этой среде — используйте «⬇ PDF».");
+                }
         }
         let saveModal = null; // { filename, content, mime, isBase64 }
         async function saveFile(filename, content, mime, isBase64) {
@@ -1032,29 +1262,31 @@
                                                 <label class="chk"><input type="checkbox" bind:checked={pdfShowRoom} /> кабинеты</label>
                                                 <label class="chk"><input type="checkbox" bind:checked={pdfWeekdaysOnly} /> будни</label>
                                                 <label class="chk"><input type="checkbox" bind:checked={pdfBW} /> ч/б</label>
+                                                <button on:click={openPrint} title="Печать по текущему режиму">🖨 Печать</button>
                                                 <button on:click={exportPDF}>⬇ PDF</button>
                                                 <button on:click={exportCSV}>⬇ CSV</button>
                                                 <button on:click={exportJSON}>⬇ JSON</button>
                                                 <label class="file">⬆ JSON<input type="file" accept="application/json" on:change={importJSON} /></label>
                                         </div>
                                         {#if genResult}<p class="status">Размещено <b>{genResult.placed}/{genResult.total}</b> · мягких нарушений: <b>{genResult.violations}</b></p>{/if}
-                                        <p class="hint">Чтобы переместить урок: зажмите и перетащите ячейку в другую (drag) либо кликните урок, затем кликните целевую ячейку. Повторный клик по выделенному снимает выделение. ✕ в ячейке — удалить.</p>
+                                        <p class="hint">Чтобы переместить урок: зажмите и перетащите ячейку в другую (drag) либо кликните урок, затем кликните целевую ячейку. Во время перетаскивания целевая ячейка подсвечивается. Повторный клик по выделенному (или Esc) снимает выделение. ✕ в ячейке — удалить.</p>
                                         {#if schedule.length === 0}
                                                 <p class="empty">Расписание пусто. Добавьте уроки и нажмите «Сгенерировать».</p>
                                         {:else}
                                                 <div class="grid-scroll">
-                                                        {#each visibleRows as row}
+                                                        {#each grid as row (row.id)}
                                                                 <div class="class-block" class:compact>
                                                                         <h3>{row.label}</h3>
                                                                         <table class:compact>
                                                                                 <thead><tr><th>День</th>{#each Array(slots) as _, si}<th>П{si + 1}{periodLabel(si) ? " " + periodLabel(si) : ""}</th>{/each}</tr></thead>
                                                                                 <tbody>
-                                                                                        {#each Array(days) as _, di}
-                                                                                                <tr><td class="day">{dayName(di)}</td>{#each Array(slots) as _, si}{@const cell = cellAt(viewMode, row.id, di, si)}<td
+                                                                                        {#each row.cells as dayCells, di}
+                                                                                                <tr><td class="day">{dayName(di)}</td>{#each dayCells as cell, si}<td
                                                                                                         class:filled={!!cell}
                                                                                                         class:conflict={!!cell && cell.conflict}
                                                                                                         style={cell ? 'background:' + subjectColor(cell.subject_id) : ''}
                                                                                                         class:selected={selectedEntry && cell && selectedEntry.id === cell.id}
+                                                                                                        class:drop-target={dropTarget && dropTarget.rowId === row.id && dropTarget.day === di && dropTarget.slot === si}
                                                                                                         data-cell
                                                                                                         data-day={di}
                                                                                                         data-slot={si}
@@ -1102,6 +1334,33 @@
                                         <div class="modal-actions">
                                                 <button on:click={cancelSave}>Отмена</button>
                                                 <button class="primary" on:click={confirmSave}>Сохранить</button>
+                                        </div>
+                                </div>
+                        </div>
+                {/if}
+
+                {#if printOpen}
+                        <div class="print-root">{@html printHTML}</div>
+                        <div class="modal-backdrop" role="button" tabindex="-1" on:click={closePrint} on:keydown={(e) => { if (e.key === 'Escape') closePrint(); }}>
+                                <div class="modal print-modal" role="dialog" tabindex="0" on:click|stopPropagation on:keydown|stopPropagation>
+                                        <h3>🖨 Печать расписания</h3>
+                                        <p class="muted">Будет напечатано ровно то, что выбрано в настройках экспорта:</p>
+                                        <ul class="print-summary">
+                                                <li>Режим: <b>{printModeTitle(exportMode)}</b></li>
+                                                <li>Бумага: <b>{pageSize}</b>, <b>{orientation === "landscape" ? "альбомная" : "книжная"}</b></li>
+                                                <li>{pdfShowTeacher ? "с учителями" : "без учителей"} · {pdfShowRoom ? "с кабинетами" : "без кабинетов"} · {pdfWeekdaysOnly ? "только будни" : "вся неделя"} · {pdfBW ? "ч/б" : "цвет"}</li>
+                                        </ul>
+                                        <p class="muted print-pages">
+                                                {#if exportMode === "school"}
+                                                        1 страница-плакат (все классы).
+                                                {:else}
+                                                        {exportMode === "teacher" ? teachers.length : exportMode === "room" ? rooms.length : classes.length} страниц — по одной на каждую {exportMode === "teacher" ? "учителя" : exportMode === "room" ? "кабинет" : "строку"}.
+                                                {/if}
+                                        </p>
+                                        <div class="modal-actions">
+                                                <button on:click={closePrint}>Отмена</button>
+                                                <button on:click={exportPDF} title="Если принтера нет — сохраните PDF">⬇ PDF вместо печати</button>
+                                                <button class="primary" on:click={doPrint}>Печатать…</button>
                                         </div>
                                 </div>
                         </div>
@@ -1231,6 +1490,8 @@
         td.filled { cursor: grab; border-radius: 4px; font-weight: 500; }
         td.filled:active { cursor: grabbing; }
         td.filled.conflict { background: #b91c1c !important; color: #fff; }
+        td.drop-target { outline: 3px dashed #1d4ed8; outline-offset: -3px; background: #dbeafe !important; }
+        td.drop-target.conflict { background: #b91c1c !important; }
         .cell-x { position: absolute; top: 1px; right: 1px; border: none; background: rgba(0,0,0,0.18); color: #fff; width: 16px; height: 16px; line-height: 14px; border-radius: 4px; cursor: pointer; font-size: 10px; padding: 0; }
         td.filled { position: relative; }
         td.filled.selected { outline: 3px solid #1d4ed8; outline-offset: -2px; }
@@ -1250,4 +1511,39 @@
         .rep-sec { margin: 6px 0; }
         .rep-sec ul { margin: 4px 0 0; padding-left: 18px; }
         .rep-sec li { margin: 2px 0; }
+
+        /* ---- Печать по режимам ---- */
+        .print-summary { margin: 8px 0; padding-left: 18px; font-size: 13px; color: #334155; }
+        .print-summary li { margin: 3px 0; }
+        .print-pages { font-size: 12px; }
+        /* Печатный DOM невидим на экране и виден только при печати. */
+        .print-root { display: none; }
+        /* These rules target the print DOM injected via {@html}; :global is
+           required because injected nodes carry no Svelte scope class. */
+        .print-root :global(.sheet) { font-family: "Segoe UI", Arial, sans-serif; }
+        .print-root :global(.sheet.one) { page-break-after: always; }
+        .print-root :global(.sheet:last-child) { page-break-after: auto; }
+        .print-root :global(.rh) { font-size: 14pt; font-weight: 700; margin: 0 0 2mm; }
+        .print-root :global(.ph) { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 3mm; }
+        .print-root :global(.pt) { font-size: 12pt; font-weight: 700; }
+        .print-root :global(.pd) { font-size: 8pt; color: #555; }
+        .print-root :global(table.ptab) { width: 100%; border-collapse: collapse; table-layout: fixed; }
+        .print-root :global(.ptab th), .print-root :global(.ptab td) { border: 0.3mm solid #999; padding: 1mm; font-size: 8.5pt; text-align: left; vertical-align: top; word-break: break-word; }
+        .print-root :global(.ptab th) { background: #eef; font-weight: 700; text-align: center; }
+        .print-root :global(.ptab th .tm) { display: block; font-weight: 400; font-size: 7pt; }
+        .print-root :global(.pf b) { font-weight: 600; }
+        .print-root :global(.pf .t) { color: #333; }
+        .print-root :global(.pf .r) { color: #555; }
+        .print-root :global(.pf.conflict) { background: #b91c1c !important; color: #fff; }
+        .print-root :global(.pf.conflict .t), .print-root :global(.pf.conflict .r) { color: #fee; }
+        .print-root :global(td.pl), .print-root :global(td.rl), .print-root :global(td.dl) { background: #f3f4f6; font-weight: 700; text-align: center; vertical-align: middle; }
+        .print-root :global(td.pl), .print-root :global(td.dl) { width: 14mm; }
+        .print-root :global(td.rl) { width: 24mm; font-size: 8pt; }
+        .print-root :global(td.rl .rd) { display: block; font-weight: 400; color: #555; }
+        .print-root :global(.sheet.poster) { font-size: 8pt; }
+        .print-root :global(.sheet.poster .ptab td) { padding: 0.6mm; font-size: 7.5pt; }
+        @media print {
+                /* Печатаем ровно фоны/цвета как на экране. */
+                .print-root :global(.pf), .print-root :global(.ptab th) { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+        }
 </style>

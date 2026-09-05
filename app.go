@@ -998,6 +998,7 @@ func (a *App) ExportPDF(schoolID int, optionsJSON string) (string, error) {
 		SubjectColor:   subjectColor,
 		LegendSubjects: legend,
 		Conflicts:      conflictLines,
+		GeneratedOn:    time.Now().Format("02.01.2006"),
 	}
 
 	pdfBytes, err := pdf.Render(po)
