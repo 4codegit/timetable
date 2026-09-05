@@ -716,6 +716,8 @@ type PDFOptions struct {
 	ShowRoom     bool   `json:"show_room"`
 	WeekdaysOnly bool   `json:"weekdays_only"`
 	BW           bool   `json:"bw"`
+	Days         int    `json:"days"`  // grid size from the UI; 0 = use saved settings
+	Slots        int    `json:"slots"` // (the UI grid may differ from saved settings)
 }
 
 // ExportPDF renders the schedule for the given school and returns the
@@ -777,6 +779,22 @@ func (a *App) ExportPDF(schoolID int, optionsJSON string) (string, error) {
 		days = 6
 	}
 	if slots <= 0 {
+		slots = 8
+	}
+	// The UI grid (what the user sees on screen) wins over the saved
+	// settings: the export must match the schedule that was generated
+	// with the UI's days/slots, which may differ from the settings JSON
+	// until the user saves the settings tab.
+	if opts.Days > 0 {
+		days = opts.Days
+	}
+	if opts.Slots > 0 {
+		slots = opts.Slots
+	}
+	if days <= 0 || days > 7 {
+		days = 6
+	}
+	if slots <= 0 || slots > 14 {
 		slots = 8
 	}
 

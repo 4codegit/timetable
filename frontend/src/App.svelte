@@ -48,10 +48,14 @@
                 try { hasPreciseSolver = await HasPreciseSolver(); }
                 catch (e) { hasPreciseSolver = true; /* old binary: assume yes */ }
         }
-        let viewMode = "class";
-        $: rows = viewMode === "teacher"
+        // "school" is the aSc-style overview: every class as a compact
+        // mini-table, all on one screen. Its data kind is still "class".
+        let viewMode = "school";
+        $: kind = viewMode === "school" ? "class" : viewMode;
+        $: overviewMode = viewMode === "school";
+        $: rows = kind === "teacher"
                 ? teachers.map((t) => ({ id: t.id, label: t.name }))
-                : viewMode === "room"
+                : kind === "room"
                 ? rooms.map((r) => ({ id: r.id, label: r.name }))
                 : classes.map((c) => ({ id: c.id, label: c.name }));
 
@@ -65,7 +69,9 @@
         let pdfBW = false;
         let classPage = 0;
         const classesPerPage = 10;
-        $: visibleRows = viewMode === "class"
+        $: visibleRows = overviewMode
+                ? rows
+                : kind === "class"
                 ? rows.slice(classPage * classesPerPage, classPage * classesPerPage + classesPerPage)
                 : rows;
         $: totalClassPages = Math.max(1, Math.ceil(classes.length / classesPerPage));
@@ -82,7 +88,7 @@
         // `conflictIDs` internally, but the compiler cannot see inside the
         // function — so we pass them as explicit arguments to make them real
         // dependencies. Any change to the schedule now rebuilds the grid.
-        $: grid = buildGrid(schedule, visibleRows, viewMode, days, slots, conflictIDs);
+        $: grid = buildGrid(schedule, visibleRows, kind, days, slots, conflictIDs);
         function buildGrid(schedule, visibleRows, viewMode, days, slots, conflictIDs) {
                 void schedule; void conflictIDs; // (dependencies — see comment above)
                 return visibleRows.map((row) => ({
@@ -622,6 +628,21 @@
                 };
         }
 
+        // Компактная подпись для обзора «вся школа»: краткое имя предмета
+        // (short_name, если задан) — полный контекст в подсказке ячейки.
+        function subjShort(list, id) {
+                const s = list.find((x) => x.id === id);
+                if (!s) return "?";
+                return s.short_name || s.name;
+        }
+        // Клик по заголовку мини-таблицы — открыть этот класс отдельно
+        // (в подробном виде с drag&drop), на нужной странице пагинации.
+        function focusRow(id) {
+                viewMode = "class";
+                const idx = classes.findIndex((c) => c.id === id);
+                if (idx >= 0) classPage = Math.floor(idx / classesPerPage);
+        }
+
         async function exportJSON() {
                 const snap = await ExportAll(activeSchoolID);
                 await saveFile("school.json", JSON.stringify(snap, null, 2), "application/json", false);
@@ -661,6 +682,8 @@
                                 show_room: pdfShowRoom,
                                 weekdays_only: pdfWeekdaysOnly,
                                 bw: pdfBW,
+                                days: days,
+                                slots: slots,
                         };
                         const b64 = await ExportPDF(activeSchoolID, JSON.stringify(options));
                         if (!b64) throw new Error("PDF не содержит данных");
@@ -1225,13 +1248,16 @@
                                                 <span class="sep"></span>
                                                 <label>Вид:
                                                         <select bind:value={viewMode}>
+                                                                <option value="school">вся школа (обзор)</option>
                                                                 <option value="class">по классам</option>
                                                                 <option value="teacher">по учителям</option>
                                                                 <option value="room">по кабинетам</option>
                                                         </select>
                                                 </label>
+                                                {#if !overviewMode}
                                                 <label class="chk"><input type="checkbox" bind:checked={compact} /> компактный</label>
-                                                {#if viewMode === "class" && rows.length > classesPerPage}
+                                                {/if}
+                                                {#if !overviewMode && kind === "class" && rows.length > classesPerPage}
                                                         <span class="pager">
                                                                 <button class="sm" on:click={() => classPage = Math.max(0, classPage - 1)} disabled={classPage === 0}>‹</button>
                                                                 <span>{classPage + 1}/{totalClassPages}</span>
@@ -1273,6 +1299,27 @@
                                         {#if schedule.length === 0}
                                                 <p class="empty">Расписание пусто. Добавьте уроки и нажмите «Сгенерировать».</p>
                                         {:else}
+                                                {#if overviewMode}
+                                                        <div class="overview">
+                                                                {#each grid as row (row.id)}
+                                                                        <div class="mini">
+                                                                                <h3 on:click={() => focusRow(row.id)} title="Открыть этот класс отдельно">{row.label}</h3>
+                                                                                <table>
+                                                                                        <thead><tr><th class="d"></th>{#each Array(slots) as _, si}<th>П{si + 1}</th>{/each}</tr></thead>
+                                                                                        <tbody>
+                                                                                                {#each row.cells as dayCells, di}
+                                                                                                        <tr><td class="day">{dayName(di)}</td>{#each dayCells as cell}<td
+                                                                                                                class:filled={!!cell}
+                                                                                                                class:conflict={!!cell && cell.conflict}
+                                                                                                                style={cell ? 'background:' + subjectColor(cell.subject_id) : ''}
+                                                                                                                title={cell ? cell.label : ''}>{#if cell}{subjShort(subjects, cell.subject_id)}{/if}</td>{/each}</tr>
+                                                                                                {/each}
+                                                                                        </tbody>
+                                                                                </table>
+                                                                        </div>
+                                                                {/each}
+                                                        </div>
+                                                {:else}
                                                 <div class="grid-scroll">
                                                         {#each grid as row (row.id)}
                                                                 <div class="class-block" class:compact>
@@ -1291,14 +1338,15 @@
                                                                                                         data-day={di}
                                                                                                         data-slot={si}
                                                                                                         data-row={row.id}
-                                                                                                        data-kind={viewMode}
-                                                                                                        on:pointerdown={(e) => onPointerDown(e, cell, viewMode, row.id, di, si)}>{#if cell}{cell.label}<button class="cell-x" title="Удалить" on:click={(e) => { e.stopPropagation(); removeEntry(cell.id); }}>✕</button>{:else}{/if}</td>{/each}</tr>
+                                                                                                        data-kind={kind}
+                                                                                                        on:pointerdown={(e) => onPointerDown(e, cell, kind, row.id, di, si)}>{#if cell}{cell.label}<button class="cell-x" title="Удалить" on:click={(e) => { e.stopPropagation(); removeEntry(cell.id); }}>✕</button>{:else}{/if}</td>{/each}</tr>
                                                                                         {/each}
                                                                                 </tbody>
                                                                         </table>
                                                                 </div>
                                                         {/each}
                                                 </div>
+                                                {/if}
                                                 {#if ghost}<div class="drag-ghost" style="left:{ghost.x}px; top:{ghost.y}px;">{ghost.label}</div>{/if}
                                                 {#if report.conflicts.length || report.unplaced.length || report.overloads.length}
                                                         <div class="report">
@@ -1546,4 +1594,18 @@
                 /* Печатаем ровно фоны/цвета как на экране. */
                 .print-root :global(.pf), .print-root :global(.ptab th) { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
         }
+
+        /* Обзор «вся школа»: все классы мини-таблицами на одном экране
+           (как лист «Timetable for all classes» в aSc Timetables). */
+        .overview { display: grid; grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); gap: 12px; align-items: start; }
+        .mini { border: 1px solid #e2e8f0; border-radius: 8px; padding: 8px; background: #fff; min-width: 0; }
+        .mini h3 { margin: 0 0 6px; font-size: 13px; color: #1d4ed8; cursor: pointer; }
+        .mini h3:hover { text-decoration: underline; }
+        .mini table { border-collapse: collapse; width: 100%; table-layout: fixed; }
+        .mini th, .mini td { border: 1px solid #e2e8f0; font-size: 10px; padding: 2px 3px; height: 24px; text-align: center; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; user-select: none; }
+        .mini th { background: #f8fafc; color: #64748b; font-weight: 600; }
+        .mini th.d, .mini td.day { width: 26px; }
+        .mini td.day { background: #f1f5f9; font-weight: 600; }
+        .mini td.filled { font-weight: 600; color: #0f172a; cursor: pointer; }
+        .mini td.conflict { background: #b91c1c !important; color: #fff; }
 </style>
