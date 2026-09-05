@@ -6,16 +6,15 @@
                 CreateLesson, ListLessons, DeleteLesson, UpdateLesson,
                 CreateConstraint, ListConstraints, DeleteConstraint,
                 DeleteTeacher, DeleteSubject, DeleteClass, DeleteRoom, DeleteScheduleEntry, SaveExport,
-                Generate, GeneratePrecise, MoveEntry, SwapEntries, ReplaceSchedule, ListSchedule, ExportAll, ImportAll, ScheduleCSV, ExportRefsCSV, ImportRefsCSV, GetSchoolSettings, UpdateSchoolSettings, HasPreciseSolver
+                Generate, GeneratePrecise, MoveEntry, SwapEntries, ReplaceSchedule, ListSchedule, ExportAll, ImportAll, ScheduleCSV, ExportRefsCSV, ImportRefsCSV, GetSchoolSettings, UpdateSchoolSettings, HasPreciseSolver, ExportPDF
         } from "../wailsjs/go/main/App";
-        import { jsPDF } from "jspdf";
         import { onMount } from "svelte";
 
         let schools = [];
         let activeSchoolID = 0;
         let newSchoolName = "Моя школа";
         let tab = "refs";
-        const APP_VERSION = "1.6.18";
+        const APP_VERSION = "1.7.0";
         let msg = "";
 
         let teachers = [], subjects = [], classes = [], rooms = [], lessons = [], constraints = [], schedule = [];
@@ -296,6 +295,25 @@
                         flash("Ошибка генерации: " + (e && e.message ? e.message : e));
                 }
         }
+        // applyMove performs a true optimistic move/swap.
+        //
+        // Old behavior: await backend → update local schedule → reload from
+        // backend. That meant the cell visually "froze" for the whole Wails +
+        // SQLite round trip and, if the user navigated away during that window,
+        // the optimistic update never rendered — so they had to switch tabs to
+        // see the change.
+        //
+        // New behavior:
+        //   1. Snapshot the current schedule (for rollback) and update the
+        //      local `schedule` array IMMEDIATELY so the grid re-renders on the
+        //      very next microtask, before any IPC.
+        //   2. THEN call the backend. The DB is the source of truth, so on the
+        //      error path we restore the snapshot so the UI matches the DB.
+        //   3. On success we DO NOT call reloadSchedule() — the optimistic
+        //      state already matches what the DB just persisted, so a fresh
+        //      round trip would only waste time and could momentarily flicker
+        //      the table. This is the key fix for the "need to navigate away
+        //      and back" symptom.
         async function applyMove(id, kind, rowId, day, slot) {
                 const src = schedule.find(en => en.id === id);
                 if (!src) {
@@ -309,7 +327,6 @@
                         flash(`⚠ Нельзя перемещать урок между ${rowKindLabel} (это нарушило бы структуру расписания). Только в пределах одной строки.`);
                         return;
                 }
-                await pushHistory();
                 // Find target in same row at the destination cell.
                 const target = schedule.find(en => {
                         if (en.id === id) return false;
@@ -318,33 +335,53 @@
                         if (kind === "teacher") return en.teacher_id === rowId;
                         return en.room_id === rowId;
                 });
+
+                // Snapshot for rollback if the backend rejects the change.
+                const snapshot = schedule.slice();
+                await pushHistory();
+
+                // 1. Optimistic UI update — fires reactivity immediately, before
+                //    any IPC. This is the fix for the "drag does nothing until
+                //    you switch tabs" bug.
+                if (target) {
+                        schedule = schedule.map((en) => en.id === src.id
+                                ? { ...en, day_of_week: day, timeslot: slot }
+                                : en.id === target.id
+                                ? { ...en, day_of_week: src.day_of_week, timeslot: src.timeslot }
+                                : en);
+                        recomputeConflicts();
+                        flash(`✓ Поменяли местами: ${cellLabelShort(src)} (${dayName(src.day_of_week)} П${src.timeslot + 1}) ⟷ ${cellLabelShort(target)} (${dayName(day)} П${slot + 1})`);
+                } else {
+                        schedule = schedule.map((en) => en.id === id
+                                ? { ...en, day_of_week: day, timeslot: slot }
+                                : en);
+                        recomputeConflicts();
+                        flash(`✓ Перемещено: ${cellLabelShort(src)} → ${dayName(day)} П${slot + 1}`);
+                }
+
+                // 2. Persist to the backend. On error, roll back to the
+                //    pre-move state so the grid matches the DB again.
                 try {
                         if (target) {
                                 await SwapEntries(src.id, day, slot, target.id, src.day_of_week, src.timeslot);
-                                // Update the displayed grid before the database refresh.  This makes a
-                                // successful drag visible even when a slow Wails/SQLite round trip follows.
-                                schedule = schedule.map((en) => en.id === src.id
-                                        ? { ...en, day_of_week: day, timeslot: slot }
-                                        : en.id === target.id
-                                        ? { ...en, day_of_week: src.day_of_week, timeslot: src.timeslot }
-                                        : en);
-                                recomputeConflicts();
-                                flash(`✓ Поменяли местами: ${cellLabelShort(src)} (${dayName(src.day_of_week)} П${src.timeslot + 1}) ⟷ ${cellLabelShort(target)} (${dayName(day)} П${slot + 1})`);
                         } else {
                                 await MoveEntry(id, day, slot);
-                                // Do the same for a move into an empty cell; reloadSchedule below still
-                                // reconciles the local view with the persisted data.
-                                schedule = schedule.map((en) => en.id === id
-                                        ? { ...en, day_of_week: day, timeslot: slot }
-                                        : en);
-                                recomputeConflicts();
-                                flash(`✓ Перемещено: ${cellLabelShort(src)} → ${dayName(day)} П${slot + 1}`);
                         }
                 } catch (err) {
+                        // Restore the snapshot and let the user know the move
+                        // was rejected (e.g. DB constraint, lost race with
+                        // another edit). Do NOT silently overwrite — the user
+                        // must see their move was rolled back.
+                        schedule = snapshot;
+                        recomputeConflicts();
                         flash(`⚠ Не удалось переместить: ${err && err.message ? err.message : err}`);
+                        return;
                 }
-                try { await reloadSchedule(); }
-                catch (err) { flash("Изменение сохранено, но не удалось обновить таблицу: " + (err && err.message ? err.message : err)); }
+                // 3. Success: do nothing. The optimistic state already matches
+                //    what the DB just persisted, so an extra reloadSchedule()
+                //    here would only add latency and risk a flicker. This is
+                //    the missing piece that caused the "navigate away and
+                //    back to see the change" symptom.
         }
         let selectedEntry = null;
         let pendingDrag = null;
@@ -477,206 +514,48 @@
                 const csv = await ScheduleCSV(activeSchoolID, days, slots);
                 await saveFile("schedule.csv", csv, "text/csv", false);
         }
-        function hexToRgb(hex) {
-                const h = String(hex).replace("#", "");
-                const full = h.length === 3 ? h.split("").map(c => c + c).join("") : h;
-                const n = parseInt(full, 16);
-                return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
-        }
 
+        // exportPDF asks the Go backend to render the PDF (via internal/pdf +
+        // signintech/gopdf + an embedded DejaVu Sans font for Cyrillic) and
+        // returns it as base64. We pass it straight to the existing SaveExport
+        // flow that writes to ~/Downloads.
+        //
+        // Old behavior (jsPDF) was unreliable inside the Wails WebKit webview
+        // (datauristring output could yield a syntactically valid but empty
+        // PDF) and the default fonts had no Cyrillic glyphs. Moving the
+        // rendering to Go fixes both.
         async function exportPDF() {
                 try {
-                const kind = exportMode === "school" ? "class" : exportMode;
-                const list = entityRows(kind);
-                if (!list.length) {
-                        flash("PDF не создан: нет строк расписания для экспорта.");
-                        return;
-                }
-                const daysN = pdfWeekdaysOnly ? Math.min(days, 5) : days;
-                const land = orientation === "landscape";
-                const doc = new jsPDF({ orientation: land ? "landscape" : "portrait", unit: "mm", format: pageSize.toLowerCase() });
-                const pageW = doc.internal.pageSize.getWidth();
-                const pageH = doc.internal.pageSize.getHeight();
-                const margin = 8;
-                const labelW = 22;
-                const gridX = margin + labelW;
-                const topY = margin + 10;
-                const legendH = exportMode === "school" ? 16 : 0;
-                const gridW = pageW - gridX - margin;
-                const gridH = pageH - topY - margin - legendH;
-                const colW = gridW / slots;
-                const rowH = gridH / daysN;
-                let first = true;
-                for (const row of list) {
-                        if (!first) doc.addPage(pageSize.toLowerCase(), land ? "landscape" : "portrait");
-                        first = false;
-                        doc.setFontSize(13);
-                        doc.setTextColor(20, 20, 20);
-                        doc.text(escapeHtml(row.label), margin, margin + 4);
-                        doc.setFontSize(8);
-                        for (let si = 0; si < slots; si++) {
-                                const lbl = periodLabel(si);
-                                doc.text("П" + (si + 1) + (lbl ? " " + lbl : ""), gridX + si * colW + 1, topY - 2);
+                        const options = {
+                                mode: exportMode,
+                                page_size: pageSize,
+                                orientation: orientation,
+                                show_teacher: pdfShowTeacher,
+                                show_room: pdfShowRoom,
+                                weekdays_only: pdfWeekdaysOnly,
+                                bw: pdfBW,
+                        };
+                        const b64 = await ExportPDF(activeSchoolID, JSON.stringify(options));
+                        if (!b64) throw new Error("PDF не содержит данных");
+                        const defName = "Расписание_" + fileSlug(pdfSchoolName()) + "_" + new Date().toISOString().slice(0, 10) + ".pdf";
+                        try {
+                                await saveFile(defName, b64, "application/pdf", true);
+                        } catch (err) {
+                                flash("Ошибка сохранения PDF: " + (err && err.message ? err.message : err));
                         }
-                        for (let di = 0; di < daysN; di++) {
-                                doc.text(dayName(di), margin, topY + (di + 0.5) * rowH + 2);
-                                for (let si = 0; si < slots; si++) {
-                                        const cell = cellAt(kind, row.id, di, si);
-                                        const x = gridX + si * colW;
-                                        const y = topY + di * rowH;
-                                        if (cell) {
-                                                const bg = cell.conflict ? "#b91c1c" : (pdfBW ? "#e5e7eb" : subjectColor(cell.subject_id));
-                                                const [r, g, b] = hexToRgb(bg);
-                                                doc.setFillColor(r, g, b);
-                                                doc.rect(x, y, colW, rowH, "F");
-                                                doc.setTextColor(20, 20, 20);
-                                                doc.setFontSize(7);
-                                                const txt = pdfShowTeacher
-                                                        ? subjName(subjects, cell.subject_id) + " (" + teachName(teachers, cell.teacher_id) + ")"
-                                                        : subjName(subjects, cell.subject_id);
-                                                const lines = doc.splitTextToSize(txt, colW - 2);
-                                                doc.text(lines.slice(0, 3), x + 1, y + 4);
-                                        } else {
-                                                doc.setDrawColor(200);
-                                                doc.rect(x, y, colW, rowH);
-                                        }
-                                }
-                        }
-                }
-                if (exportMode === "school") {
-                        let lx = margin, ly = pageH - margin - 4;
-                        doc.setFontSize(8);
-                        for (const s of subjects) {
-                                if (!schedule.some(e => e.subject_id === s.id)) continue;
-                                const [r, g, b] = hexToRgb(pdfBW ? "#e5e7eb" : subjectColor(s.id));
-                                doc.setFillColor(r, g, b);
-                                doc.rect(lx, ly - 3, 4, 4, "F");
-                                doc.setTextColor(20, 20, 20);
-                                doc.text(escapeHtml(s.name), lx + 5, ly);
-                                lx += 7 + doc.getTextWidth(escapeHtml(s.name)) + 4;
-                                if (lx > pageW - 30) { lx = margin; ly -= 5; }
-                        }
-                }
-                // datauristring is unreliable in some WebKit/Wails builds and can
-                // yield a syntactically valid but empty PDF. Encode the PDF bytes
-                // directly instead.
-                const bytes = new Uint8Array(doc.output("arraybuffer"));
-                let binary = "";
-                const chunk = 0x8000;
-                for (let offset = 0; offset < bytes.length; offset += chunk) {
-                        binary += String.fromCharCode(...bytes.subarray(offset, offset + chunk));
-                }
-                const base64 = btoa(binary);
-                if (!base64) throw new Error("PDF не содержит данных");
-                const defName = "Расписание_" + fileSlug(pdfSchoolName()) + "_" + new Date().toISOString().slice(0, 10) + ".pdf";
-                try {
-                        await saveFile(defName, base64, "application/pdf", true);
-                } catch (err) {
-                        flash("Ошибка сохранения PDF: " + (err && err.message ? err.message : err));
-                }
                 } catch (e) {
                         flash("Ошибка генерации PDF: " + (e && e.message ? e.message : e));
                 }
-        }
-        function entityRows(kind) {
-                if (kind === "teacher") return teachers.map((t) => ({ id: t.id, label: t.name }));
-                if (kind === "room") return rooms.map((r) => ({ id: r.id, label: r.name }));
-                return classes.map((c) => ({ id: c.id, label: c.name }));
-        }
-        function exportBlock(row, kind, pageBreak) {
-                const daysN = pdfWeekdaysOnly ? Math.min(days, 5) : days;
-                let h = pageBreak ? '<div class="page">' : "<div>";
-                h += '<div class="doc-header"><h2>' + escapeHtml(row.label) + "</h2>";
-                h += '<div class="doc-meta">' + escapeHtml(pdfSchoolName()) + " · " + exportTitle() + " · " + new Date().toLocaleDateString("ru-RU") + "</div></div>";
-                h += "<table><thead><tr><th>День</th>";
-                for (let si = 0; si < slots; si++) {
-                        const lbl = periodLabel(si);
-                        h += "<th>П" + (si + 1) + (lbl ? " " + lbl : "") + "</th>";
-                }
-                h += "</tr></thead><tbody>";
-                for (let di = 0; di < daysN; di++) {
-                        h += "<tr><td class=\"day\">" + dayName(di) + "</td>";
-                        for (let si = 0; si < slots; si++) {
-                                const cell = cellAt(kind, row.id, di, si);
-                                if (!cell) { h += "<td></td>"; continue; }
-                                const bg = cell.conflict ? "#b91c1c" : (pdfBW ? "#e5e7eb" : subjectColor(cell.subject_id));
-                                const fg = cell.conflict ? "#ffffff" : "#000000";
-                                h += '<td style="background:' + bg + ";color:" + fg + '">' + escapeHtml(cellLabel(cell)) + "</td>";
-                        }
-                        h += "</tr>";
-                }
-                return h + "</tbody></table></div>";
         }
         function subjectColor(sid) {
                 const palette = ["#dbeafe","#dcfce7","#fef9c3","#fae8ff","#ffedd5","#cffafe","#fecaca","#e0e7ff","#d1fae5","#fee2e2","#fef3c7","#ede9fe","#ccfbf1","#fce7f3"];
                 return palette[Math.abs((sid || 0)) % palette.length];
         }
-        function cellLabel(cell) {
-                const parts = [subjName(subjects, cell.subject_id)];
-                if (pdfShowTeacher) parts.push("(" + teachName(teachers, cell.teacher_id) + ")");
-                if (pdfShowRoom) {
-                        const rn = rooms.find(r => r.id === cell.room_id)?.name;
-                        if (rn) parts.push(rn);
-                }
-                return parts.filter(Boolean).join(" ");
-        }
         function pdfSchoolName() {
                 return (schools.find(s => s.id === activeSchoolID)?.name) || "Школа";
         }
-        function exportTitle() {
-                const m = { school: "вся школа", class: "по классам", teacher: "по учителям", room: "по кабинетам" };
-                return m[exportMode] || "расписание";
-        }
         function fileSlug(s) {
                 return String(s).replace(/[\\/:*?"<>|]/g, "_").replace(/\s+/g, "_");
-        }
-        function buildLegend() {
-                const used = new Set(schedule.map(e => e.subject_id));
-                let h = '<div class="legend"><h3>Легенда</h3><div class="legend-row">';
-                for (const s of subjects) {
-                        if (!used.has(s.id)) continue;
-                        const bg = pdfBW ? "#e5e7eb" : subjectColor(s.id);
-                        h += '<span class="legend-item"><span class="sw" style="background:' + bg + '"></span>' + escapeHtml(s.name) + "</span>";
-                }
-                h += "</div>";
-                h += '<div class="legend-note">' + (pdfBW ? "Ч/Б: серый — любой предмет; красный — конфликт." : "Красный — конфликт расписания.") + "</div></div>";
-                return h;
-        }
-        function buildConflictList() {
-                if (conflictIDs.size === 0) return "";
-                let h = '<div class="conflicts"><h3>Конфликты</h3><ul>';
-                for (const e of schedule) {
-                        if (!conflictIDs.has(e.id)) continue;
-                        h += "<li>" + escapeHtml(cellLabel({ subject_id: e.subject_id, teacher_id: e.teacher_id, room_id: e.room_id })) + " — " + dayName(e.day_of_week) + " П" + (e.timeslot + 1) + "</li>";
-                }
-                return h + "</ul></div>";
-        }
-        function buildExportHTML() {
-                const kind = exportMode === "school" ? "class" : exportMode;
-                const list = entityRows(kind);
-                let body = "";
-                if (exportMode === "school") {
-                        for (const row of list) body += exportBlock(row, kind, false);
-                        body += buildLegend();
-                        body += buildConflictList();
-                } else {
-                        for (const row of list) body += exportBlock(row, kind, true);
-                }
-                const cs = exportMode === "school"
-                        ? "table{border-collapse:collapse;width:100%}td,th{border:1px solid #999;padding:1px;font-size:8px}.day{font-size:8px}"
-                        : "table{border-collapse:collapse;width:100%}td,th{border:1px solid #999;padding:3px;font-size:11px}.day{font-size:11px}";
-                const title = "Расписание_" + fileSlug(pdfSchoolName()) + "_" + new Date().toISOString().slice(0, 10);
-                return "<html><head><meta charset=\"utf-8\"><title>" + escapeHtml(title) + "</title><" + "style>"
-                        + "@page{size:" + pageSize + " " + orientation + ";margin:8mm}"
-                        + "body{font-family:Arial,sans-serif;color:#000}.page{break-after:page}" + cs
-                        + ".doc-header{margin-bottom:4px}.doc-header h2{margin:0;font-size:14px}.doc-meta{color:#444;font-size:10px;margin-bottom:2px}"
-                        + "td{white-space:nowrap;overflow:hidden}"
-                        + ".legend{margin-top:8px}.legend h3{font-size:11px;margin:0 0 2px}.legend-row{display:flex;flex-wrap:wrap;gap:8px}.legend-item{display:inline-flex;align-items:center;gap:3px;font-size:9px}.sw{width:10px;height:10px;display:inline-block;border:1px solid #999}.legend-note{font-size:8px;color:#555;margin-top:2px}"
-                        + ".conflicts{margin-top:8px;font-size:9px}.conflicts h3{font-size:11px;margin:0 0 2px}.conflicts li{color:#b91c1c}"
-                        + "<" + "/style></head><body>" + body + "</body></html>";
-        }
-        function escapeHtml(s) {
-                return String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
         }
         let saveModal = null; // { filename, content, mime, isBase64 }
         async function saveFile(filename, content, mime, isBase64) {

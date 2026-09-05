@@ -36,6 +36,8 @@ export function DeleteTeacher(arg1:number):Promise<void>;
 
 export function ExportAll(arg1:number):Promise<io.Snapshot>;
 
+export function ExportPDF(arg1:number,arg2:string):Promise<string>;
+
 export function ExportRefsCSV(arg1:number,arg2:string):Promise<string>;
 
 export function Generate(arg1:number,arg2:number,arg3:number):Promise<solver.Result>;

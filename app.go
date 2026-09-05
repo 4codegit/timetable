@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -17,6 +18,7 @@ import (
 	"timetable/internal/db"
 	"timetable/internal/domain"
 	"timetable/internal/io"
+	"timetable/internal/pdf"
 	"timetable/internal/solver"
 
 	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
@@ -692,4 +694,315 @@ func toRoomMap(rs []domain.Room) map[int]domain.Room {
 		m[r.ID] = r
 	}
 	return m
+}
+
+// ---- PDF export ----
+//
+// ExportPDF generates the timetable PDF on the Go side (via internal/pdf,
+// which uses signintech/gopdf + an embedded DejaVu Sans font for Cyrillic)
+// and returns it as a base64 string. The frontend hands this straight to
+// the existing SaveExport flow, so the user-facing save dialog is
+// unchanged. Moving PDF generation off jsPDF fixes the long-standing
+// "datauristring is unreliable in Wails WebKit" issue and produces
+// reliable Cyrillic text in every PDF.
+
+// PDFOptions is the JSON shape the frontend sends to ExportPDF. All
+// fields are simple scalars so the JS↔Go boundary stays trivial.
+type PDFOptions struct {
+	Mode         string `json:"mode"`        // "school" | "class" | "teacher" | "room"
+	PageSize     string `json:"page_size"`   // "A0".."A4"
+	Orientation  string `json:"orientation"` // "landscape" | "portrait"
+	ShowTeacher  bool   `json:"show_teacher"`
+	ShowRoom     bool   `json:"show_room"`
+	WeekdaysOnly bool   `json:"weekdays_only"`
+	BW           bool   `json:"bw"`
+}
+
+// ExportPDF renders the schedule for the given school and returns the
+// PDF as base64 (so the frontend's existing SaveExport can write it).
+func (a *App) ExportPDF(schoolID int, optionsJSON string) (string, error) {
+	opts := PDFOptions{
+		Mode:         "school",
+		PageSize:     "A2",
+		Orientation:  "landscape",
+		ShowTeacher:  true,
+		ShowRoom:     true,
+		WeekdaysOnly: false,
+		BW:           false,
+	}
+	if strings.TrimSpace(optionsJSON) != "" {
+		if err := json.Unmarshal([]byte(optionsJSON), &opts); err != nil {
+			return "", fmt.Errorf("parse PDF options: %w", err)
+		}
+	}
+	if opts.Mode != "school" && opts.Mode != "class" && opts.Mode != "teacher" && opts.Mode != "room" {
+		opts.Mode = "school"
+	}
+	if opts.PageSize == "" {
+		opts.PageSize = "A2"
+	}
+	if opts.Orientation != "portrait" {
+		opts.Orientation = "landscape"
+	}
+
+	// Load all the data we need.
+	sc, err := a.store.GetSchool(schoolID)
+	if err != nil {
+		return "", fmt.Errorf("load school: %w", err)
+	}
+	ts, err := a.store.ListTeachers(schoolID)
+	if err != nil {
+		return "", err
+	}
+	cs, err := a.store.ListClasses(schoolID)
+	if err != nil {
+		return "", err
+	}
+	rs, err := a.store.ListRooms(schoolID)
+	if err != nil {
+		return "", err
+	}
+	subs, err := a.store.ListSubjects(schoolID)
+	if err != nil {
+		return "", err
+	}
+	entries, err := a.store.ListSchedule(schoolID)
+	if err != nil {
+		return "", err
+	}
+	settings := a.loadSettings(schoolID)
+	days := settings.Days
+	slots := settings.Slots
+	if days <= 0 {
+		days = 6
+	}
+	if slots <= 0 {
+		slots = 8
+	}
+
+	// Resolve mode → row list.
+	var rows []pdf.Row
+	switch opts.Mode {
+	case "school", "class":
+		for _, c := range cs {
+			rows = append(rows, pdf.Row{ID: c.ID, Label: c.Name})
+		}
+		sort.Slice(rows, func(i, j int) bool { return rows[i].Label < rows[j].Label })
+	case "teacher":
+		for _, t := range ts {
+			rows = append(rows, pdf.Row{ID: t.ID, Label: t.Name})
+		}
+		sort.Slice(rows, func(i, j int) bool { return rows[i].Label < rows[j].Label })
+	case "room":
+		for _, r := range rs {
+			rows = append(rows, pdf.Row{ID: r.ID, Label: r.Name})
+		}
+		sort.Slice(rows, func(i, j int) bool { return rows[i].Label < rows[j].Label })
+	}
+
+	// Conflict detection — same logic as the frontend recomputeConflicts().
+	// Pre-compute so CellAt can flag conflict cells.
+	type cellKey struct{ day, slot int }
+	conflicts := map[int]bool{}
+	{
+		busyT := map[cellKey][]int{}
+		busyC := map[cellKey][]int{}
+		busyR := map[cellKey][]int{}
+		for _, e := range entries {
+			k := cellKey{e.DayOfWeek, e.Timeslot}
+			busyT[k] = append(busyT[k], e.ID)
+			busyC[k] = append(busyC[k], e.ID)
+			busyR[k] = append(busyR[k], e.ID)
+		}
+		for _, ids := range busyT {
+			if len(ids) > 1 {
+				for _, id := range ids {
+					conflicts[id] = true
+				}
+			}
+		}
+		for _, ids := range busyC {
+			if len(ids) > 1 {
+				for _, id := range ids {
+					conflicts[id] = true
+				}
+			}
+		}
+		for _, ids := range busyR {
+			if len(ids) > 1 {
+				for _, id := range ids {
+					conflicts[id] = true
+				}
+			}
+		}
+	}
+
+	// Build a lookup so CellAt is O(1) per (row, day, slot).
+	type cellInfo struct {
+		subjectID, teacherID, roomID int
+		conflict                     bool
+	}
+	lookup := map[int]map[cellKey]cellInfo{} // rowID -> (day,slot) -> info
+	for _, e := range entries {
+		var rowID int
+		switch opts.Mode {
+		case "school", "class":
+			rowID = e.ClassID
+		case "teacher":
+			rowID = e.TeacherID
+		case "room":
+			rowID = e.RoomID
+		}
+		if lookup[rowID] == nil {
+			lookup[rowID] = map[cellKey]cellInfo{}
+		}
+		k := cellKey{e.DayOfWeek, e.Timeslot}
+		// Two entries in the same cell (a conflict) — keep the first one,
+		// but mark both as conflicts via the conflicts map above so the
+		// cell shows red.
+		if _, exists := lookup[rowID][k]; !exists {
+			lookup[rowID][k] = cellInfo{
+				subjectID: e.SubjectID,
+				teacherID: e.TeacherID,
+				roomID:    e.RoomID,
+				conflict:  conflicts[e.ID],
+			}
+		}
+	}
+
+	// Resolvers.
+	subjName := func(id int) string {
+		for _, s := range subs {
+			if s.ID == id {
+				return s.Name
+			}
+		}
+		return "?"
+	}
+	teachName := func(id int) string {
+		for _, t := range ts {
+			if t.ID == id {
+				if t.ShortName != "" {
+					return t.ShortName
+				}
+				return t.Name
+			}
+		}
+		return "?"
+	}
+	roomName := func(id int) string {
+		for _, r := range rs {
+			if r.ID == id {
+				return r.Name
+			}
+		}
+		return "?"
+	}
+
+	// Subject colour palette — mirrors the frontend's subjectColor().
+	subjectColor := func(id int) string {
+		palette := []string{"#dbeafe", "#dcfce7", "#fef9c3", "#fae8ff", "#ffedd5", "#cffafe", "#fecaca", "#e0e7ff", "#d1fae5", "#fee2e2", "#fef3c7", "#ede9fe", "#ccfbf1", "#fce7f3"}
+		idx := id
+		if idx < 0 {
+			idx = -idx
+		}
+		return palette[idx%len(palette)]
+	}
+
+	// Legend — only subjects that actually appear in the schedule.
+	usedSubjects := map[int]bool{}
+	for _, e := range entries {
+		usedSubjects[e.SubjectID] = true
+	}
+	var legend []pdf.LegendItem
+	for _, s := range subs {
+		if usedSubjects[s.ID] {
+			legend = append(legend, pdf.LegendItem{SubjectID: s.ID, Name: s.Name})
+		}
+	}
+	sort.SliceStable(legend, func(i, j int) bool { return legend[i].Name < legend[j].Name })
+
+	// Conflict lines (for the bottom of "school" poster mode).
+	var conflictLines []pdf.ConflictLine
+	if len(conflicts) > 0 {
+		dayNames := []string{"Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"}
+		for _, e := range entries {
+			if !conflicts[e.ID] {
+				continue
+			}
+			dn := "?"
+			if e.DayOfWeek >= 0 && e.DayOfWeek < len(dayNames) {
+				dn = dayNames[e.DayOfWeek]
+			}
+			text := fmt.Sprintf("%s (%s) — %s П%d",
+				subjName(e.SubjectID), teachName(e.TeacherID), dn, e.Timeslot+1)
+			conflictLines = append(conflictLines, pdf.ConflictLine{Text: text})
+		}
+		sort.SliceStable(conflictLines, func(i, j int) bool { return conflictLines[i].Text < conflictLines[j].Text })
+	}
+
+	// Periods.
+	periods := make([]pdf.Period, slots)
+	for i, p := range settings.Periods {
+		if i >= slots {
+			break
+		}
+		periods[i] = pdf.Period{Start: p.Start, End: p.End}
+	}
+
+	// Title for the header line.
+	titleMap := map[string]string{
+		"school":  "вся школа",
+		"class":   "по классам",
+		"teacher": "по учителям",
+		"room":    "по кабинетам",
+	}
+	title := titleMap[opts.Mode]
+	if title == "" {
+		title = "расписание"
+	}
+
+	// Build the pdf.Options.
+	po := pdf.Options{
+		SchoolName: sc.Name,
+		Title:      title,
+		Days:       days,
+		Slots:      slots,
+		Periods:    periods,
+		Mode:       opts.Mode,
+		Rows:       rows,
+		CellAt: func(rowID, day, slot int) (pdf.Cell, bool) {
+			if lookup[rowID] == nil {
+				return pdf.Cell{}, false
+			}
+			info, ok := lookup[rowID][cellKey{day, slot}]
+			if !ok {
+				return pdf.Cell{}, false
+			}
+			return pdf.Cell{
+				SubjectID: info.subjectID,
+				TeacherID: info.teacherID,
+				RoomID:    info.roomID,
+				Conflict:  info.conflict,
+			}, true
+		},
+		ShowTeacher:    opts.ShowTeacher,
+		ShowRoom:       opts.ShowRoom,
+		WeekdaysOnly:   opts.WeekdaysOnly,
+		BW:             opts.BW,
+		PageSize:       opts.PageSize,
+		Orientation:    opts.Orientation,
+		SubjectName:    subjName,
+		TeacherName:    teachName,
+		RoomName:       roomName,
+		SubjectColor:   subjectColor,
+		LegendSubjects: legend,
+		Conflicts:      conflictLines,
+	}
+
+	pdfBytes, err := pdf.Render(po)
+	if err != nil {
+		return "", fmt.Errorf("render pdf: %w", err)
+	}
+	return base64.StdEncoding.EncodeToString(pdfBytes), nil
 }

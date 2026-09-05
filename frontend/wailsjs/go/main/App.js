@@ -66,6 +66,10 @@ export function ExportAll(arg1) {
   return window['go']['main']['App']['ExportAll'](arg1);
 }
 
+export function ExportPDF(arg1, arg2) {
+  return window['go']['main']['App']['ExportPDF'](arg1, arg2);
+}
+
 export function ExportRefsCSV(arg1, arg2) {
   return window['go']['main']['App']['ExportRefsCSV'](arg1, arg2);
 }
