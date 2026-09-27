@@ -122,6 +122,26 @@ func (a *App) UpdateLesson(l domain.Lesson) (*domain.Lesson, error) {
 	return &l, nil
 }
 
+// UpdateTeacher edits name/short name/max hours of a teacher.
+func (a *App) UpdateTeacher(t domain.Teacher) error {
+	return a.store.UpdateTeacher(t)
+}
+
+// UpdateSubject edits name/short name/room type of a subject.
+func (a *App) UpdateSubject(sub domain.Subject) error {
+	return a.store.UpdateSubject(sub)
+}
+
+// UpdateClass edits name/grade/student count of a class.
+func (a *App) UpdateClass(c domain.SchoolClass) error {
+	return a.store.UpdateClass(c)
+}
+
+// UpdateRoom edits name/capacity/room type of a room.
+func (a *App) UpdateRoom(r domain.Room) error {
+	return a.store.UpdateRoom(r)
+}
+
 func (a *App) DeleteTeacher(id int) error {
 	return a.store.DeleteTeacher(id)
 }
@@ -207,7 +227,7 @@ func (a *App) ListConstraints(schoolID int) ([]domain.Constraint, error) {
 // ---- Scheduling ----
 
 // Generate runs the CSP solver and persists the result.
-func (a *App) Generate(schoolID, days, slots int) (*solver.Result, error) {
+func (a *App) Generate(schoolID, days, slots, daysMask int) (*solver.Result, error) {
 	lessons, err := a.store.ListLessons(schoolID)
 	if err != nil {
 		return nil, err
@@ -230,7 +250,7 @@ func (a *App) Generate(schoolID, days, slots int) (*solver.Result, error) {
 		Rooms:       rs,
 		Subjects:    subjMap,
 		Constraints: cons,
-		Config:      domain.SchedulingConfig{DaysPerWeek: days, SlotsPerDay: slots},
+		Config:      domain.SchedulingConfig{DaysPerWeek: days, SlotsPerDay: slots, DaysMask: daysMask},
 	}
 
 	res := solver.Solve(a.ctx, in, runtime.NumCPU(), 30*time.Second)
@@ -272,7 +292,7 @@ func (a *App) ReplaceSchedule(schoolID int, entries []domain.ScheduleEntry) erro
 
 // GeneratePrecise prefers the OR-Tools CP-SAT solver (when compiled with -tags ortools),
 // otherwise falls back to the pure-Go backtracking solver.
-func (a *App) GeneratePrecise(schoolID, days, slots int) (*solver.Result, error) {
+func (a *App) GeneratePrecise(schoolID, days, slots, daysMask int) (*solver.Result, error) {
 	lessons, err := a.store.ListLessons(schoolID)
 	if err != nil {
 		return nil, err
@@ -291,10 +311,10 @@ func (a *App) GeneratePrecise(schoolID, days, slots int) (*solver.Result, error)
 		Rooms:       rs,
 		Subjects:    toSubjMap(subs),
 		Constraints: cons,
-		Config:      domain.SchedulingConfig{DaysPerWeek: days, SlotsPerDay: slots},
+		Config:      domain.SchedulingConfig{DaysPerWeek: days, SlotsPerDay: slots, DaysMask: daysMask},
 	}
 
-	res := solver.SolvePrecise(a.ctx, in, runtime.NumCPU(), 60*time.Second)
+	res := solver.SolvePrecise(a.ctx, in, runtime.NumCPU(), 12*time.Second)
 	if err := a.store.ReplaceSchedule(schoolID, res.Entries); err != nil {
 		return nil, err
 	}
@@ -324,13 +344,16 @@ func (a *App) ExportRefsCSV(schoolID int, entity string) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		w.Write([]string{"name", "grade", "student_count", "subgroup_of"})
+		rs, _ := a.store.ListRooms(schoolID)
+		w.Write([]string{"name", "grade", "room"})
 		for _, c := range cs {
-			sub := ""
-			if c.SubgroupOf != nil {
-				sub = strconv.Itoa(*c.SubgroupOf)
+			room := ""
+			for _, r := range rs {
+				if r.ID == c.RoomID {
+					room = r.Name
+				}
 			}
-			w.Write([]string{c.Name, strconv.Itoa(c.Grade), strconv.Itoa(c.StudentCount), sub})
+			w.Write([]string{c.Name, strconv.Itoa(c.Grade), room})
 		}
 	case "subjects":
 		ss, err := a.store.ListSubjects(schoolID)
@@ -346,9 +369,9 @@ func (a *App) ExportRefsCSV(schoolID int, entity string) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		w.Write([]string{"name", "capacity", "room_type"})
+		w.Write([]string{"name", "room_type"})
 		for _, r := range rs {
-			w.Write([]string{r.Name, strconv.Itoa(r.Capacity), r.RoomType})
+			w.Write([]string{r.Name, r.RoomType})
 		}
 	case "lessons":
 		ls, err := a.store.ListLessons(schoolID)
@@ -432,6 +455,7 @@ func (a *App) ImportRefsCSV(schoolID int, entity string, csvText string) (int, e
 			count++
 		}
 	case "classes":
+		rs, _ := a.store.ListRooms(schoolID)
 		for _, row := range records[start:] {
 			if len(row) < 1 || strings.TrimSpace(row[0]) == "" {
 				continue
@@ -442,19 +466,16 @@ func (a *App) ImportRefsCSV(schoolID int, entity string, csvText string) (int, e
 					grade = v
 				}
 			}
-			stu := 0
-			if len(row) > 2 {
-				if v, err := strconv.Atoi(strings.TrimSpace(row[2])); err == nil {
-					stu = v
+			roomID := 0
+			if len(row) > 2 && strings.TrimSpace(row[2]) != "" {
+				roomName := strings.TrimSpace(row[2])
+				for _, r := range rs {
+					if r.Name == roomName {
+						roomID = r.ID
+					}
 				}
 			}
-			var sub *int
-			if len(row) > 3 && strings.TrimSpace(row[3]) != "" {
-				if v, err := strconv.Atoi(strings.TrimSpace(row[3])); err == nil {
-					sub = &v
-				}
-			}
-			if _, err := a.store.CreateClass(domain.SchoolClass{SchoolID: schoolID, Name: row[0], Grade: grade, StudentCount: stu, SubgroupOf: sub}); err != nil {
+			if _, err := a.store.CreateClass(domain.SchoolClass{SchoolID: schoolID, Name: row[0], Grade: grade, RoomID: roomID}); err != nil {
 				return count, err
 			}
 			count++
@@ -482,17 +503,11 @@ func (a *App) ImportRefsCSV(schoolID int, entity string, csvText string) (int, e
 			if len(row) < 1 || strings.TrimSpace(row[0]) == "" {
 				continue
 			}
-			cap := 30
-			if len(row) > 1 {
-				if v, err := strconv.Atoi(strings.TrimSpace(row[1])); err == nil {
-					cap = v
-				}
-			}
 			rt := "any"
-			if len(row) > 2 && strings.TrimSpace(row[2]) != "" {
-				rt = row[2]
+			if len(row) > 1 && strings.TrimSpace(row[1]) != "" {
+				rt = row[1]
 			}
-			if _, err := a.store.CreateRoom(domain.Room{SchoolID: schoolID, Name: row[0], Capacity: cap, RoomType: rt}); err != nil {
+			if _, err := a.store.CreateRoom(domain.Room{SchoolID: schoolID, Name: row[0], RoomType: rt}); err != nil {
 				return count, err
 			}
 			count++
@@ -575,9 +590,10 @@ type period struct {
 }
 
 type schoolSettings struct {
-	Days    int      `json:"days"`
-	Slots   int      `json:"slots"`
-	Periods []period `json:"periods"`
+	Days     int      `json:"days"`
+	Slots    int      `json:"slots"`
+	DaysMask int      `json:"days_mask"` // bit 0 = Пн … bit 6 = Вс; 0 = derive from Days
+	Periods  []period `json:"periods"`
 }
 
 func defaultPeriods(n int) []period {
@@ -603,6 +619,12 @@ func (a *App) loadSettings(schoolID int) schoolSettings {
 	}
 	if st.Slots <= 0 {
 		st.Slots = 8
+	}
+	if st.DaysMask == 0 {
+		// Legacy settings (or fresh school): first Days days from Monday.
+		for d := 0; d < st.Days && d < 7; d++ {
+			st.DaysMask |= 1 << d
+		}
 	}
 	if len(st.Periods) != st.Slots {
 		st.Periods = defaultPeriods(st.Slots)
@@ -716,8 +738,9 @@ type PDFOptions struct {
 	ShowRoom     bool   `json:"show_room"`
 	WeekdaysOnly bool   `json:"weekdays_only"`
 	BW           bool   `json:"bw"`
-	Days         int    `json:"days"`  // grid size from the UI; 0 = use saved settings
-	Slots        int    `json:"slots"` // (the UI grid may differ from saved settings)
+	Days         int    `json:"days"`      // grid size from the UI; 0 = use saved settings
+	Slots        int    `json:"slots"`     // (the UI grid may differ from saved settings)
+	DaysMask     int    `json:"days_mask"` // school-day checkboxes; 0 = saved settings
 }
 
 // ExportPDF renders the schedule for the given school and returns the
@@ -791,6 +814,10 @@ func (a *App) ExportPDF(schoolID int, optionsJSON string) (string, error) {
 	if opts.Slots > 0 {
 		slots = opts.Slots
 	}
+	daysMask := settings.DaysMask
+	if opts.DaysMask > 0 {
+		daysMask = opts.DaysMask
+	}
 	if days <= 0 || days > 7 {
 		days = 6
 	}
@@ -802,8 +829,34 @@ func (a *App) ExportPDF(schoolID int, optionsJSON string) (string, error) {
 	var rows []pdf.Row
 	switch opts.Mode {
 	case "school", "class":
+		// Класс учится в своём кабинете: кабинет задан полем класса
+		// (room_id) и пишется один раз в подписи («10А-каб:68»), а из
+		// ячеек убран — ученики не ходят по кабинетам.
+		hasLessons := map[int]bool{}
+		for _, e := range entries {
+			hasLessons[e.ClassID] = true
+		}
+		roomName := func(roomID int) string {
+			for _, r := range rs {
+				if r.ID == roomID {
+					return r.Name
+				}
+			}
+			return ""
+		}
 		for _, c := range cs {
-			rows = append(rows, pdf.Row{ID: c.ID, Label: c.Name})
+			// «Вся школа» — только классы с уроками: пустые классы
+			// превращают плакат в страницу пустых рамок.
+			if opts.Mode == "school" && !hasLessons[c.ID] {
+				continue
+			}
+			label := c.Name
+			if c.RoomID != 0 {
+				if rn := roomName(c.RoomID); rn != "" {
+					label += "-каб:" + rn
+				}
+			}
+			rows = append(rows, pdf.Row{ID: c.ID, Label: label})
 		}
 		sort.Slice(rows, func(i, j int) bool { return rows[i].Label < rows[j].Label })
 	case "teacher":
@@ -818,19 +871,25 @@ func (a *App) ExportPDF(schoolID int, optionsJSON string) (string, error) {
 		sort.Slice(rows, func(i, j int) bool { return rows[i].Label < rows[j].Label })
 	}
 
-	// Conflict detection — same logic as the frontend recomputeConflicts().
-	// Pre-compute so CellAt can flag conflict cells.
-	type cellKey struct{ day, slot int }
+	// Conflict detection: конфликт = ДВА урока с одним и тем же
+	// учителем/классом/кабинетом в одно время. Ключ — значение поля
+	// + время: группировка только по времени красила всю школу
+	// (в каждом слоте законно стоят уроки разных классов).
+	type occKey struct{ v, day, slot int }
 	conflicts := map[int]bool{}
 	{
-		busyT := map[cellKey][]int{}
-		busyC := map[cellKey][]int{}
-		busyR := map[cellKey][]int{}
+		busyT := map[occKey][]int{}
+		busyC := map[occKey][]int{}
+		busyR := map[occKey][]int{}
 		for _, e := range entries {
-			k := cellKey{e.DayOfWeek, e.Timeslot}
+			k := occKey{e.TeacherID, e.DayOfWeek, e.Timeslot}
 			busyT[k] = append(busyT[k], e.ID)
+			k = occKey{e.ClassID, e.DayOfWeek, e.Timeslot}
 			busyC[k] = append(busyC[k], e.ID)
-			busyR[k] = append(busyR[k], e.ID)
+			k = occKey{e.RoomID, e.DayOfWeek, e.Timeslot}
+			if e.RoomID != 0 {
+				busyR[k] = append(busyR[k], e.ID)
+			}
 		}
 		for _, ids := range busyT {
 			if len(ids) > 1 {
@@ -856,9 +915,10 @@ func (a *App) ExportPDF(schoolID int, optionsJSON string) (string, error) {
 	}
 
 	// Build a lookup so CellAt is O(1) per (row, day, slot).
+	type cellKey struct{ day, slot int }
 	type cellInfo struct {
-		subjectID, teacherID, roomID int
-		conflict                     bool
+		subjectID, teacherID, roomID, classID int
+		conflict                              bool
 	}
 	lookup := map[int]map[cellKey]cellInfo{} // rowID -> (day,slot) -> info
 	for _, e := range entries {
@@ -883,6 +943,7 @@ func (a *App) ExportPDF(schoolID int, optionsJSON string) (string, error) {
 				subjectID: e.SubjectID,
 				teacherID: e.TeacherID,
 				roomID:    e.RoomID,
+				classID:   e.ClassID,
 				conflict:  conflicts[e.ID],
 			}
 		}
@@ -908,6 +969,14 @@ func (a *App) ExportPDF(schoolID int, optionsJSON string) (string, error) {
 		}
 		return "?"
 	}
+	className := func(id int) string {
+		for _, c := range cs {
+			if c.ID == id {
+				return c.Name
+			}
+		}
+		return "?"
+	}
 	roomName := func(id int) string {
 		for _, r := range rs {
 			if r.ID == id {
@@ -918,45 +987,14 @@ func (a *App) ExportPDF(schoolID int, optionsJSON string) (string, error) {
 	}
 
 	// Subject colour palette — mirrors the frontend's subjectColor().
+	// Насыщенные цвета чипов: белый текст читается на любом из них.
 	subjectColor := func(id int) string {
-		palette := []string{"#dbeafe", "#dcfce7", "#fef9c3", "#fae8ff", "#ffedd5", "#cffafe", "#fecaca", "#e0e7ff", "#d1fae5", "#fee2e2", "#fef3c7", "#ede9fe", "#ccfbf1", "#fce7f3"}
+		palette := []string{"#3b82f6", "#10b981", "#f59e0b", "#8b5cf6", "#ec4899", "#06b6d4", "#6366f1", "#14b8a6", "#f97316", "#a855f7", "#0ea5e9", "#ca8a04", "#65a30d", "#db2777"}
 		idx := id
 		if idx < 0 {
 			idx = -idx
 		}
 		return palette[idx%len(palette)]
-	}
-
-	// Legend — only subjects that actually appear in the schedule.
-	usedSubjects := map[int]bool{}
-	for _, e := range entries {
-		usedSubjects[e.SubjectID] = true
-	}
-	var legend []pdf.LegendItem
-	for _, s := range subs {
-		if usedSubjects[s.ID] {
-			legend = append(legend, pdf.LegendItem{SubjectID: s.ID, Name: s.Name})
-		}
-	}
-	sort.SliceStable(legend, func(i, j int) bool { return legend[i].Name < legend[j].Name })
-
-	// Conflict lines (for the bottom of "school" poster mode).
-	var conflictLines []pdf.ConflictLine
-	if len(conflicts) > 0 {
-		dayNames := []string{"Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"}
-		for _, e := range entries {
-			if !conflicts[e.ID] {
-				continue
-			}
-			dn := "?"
-			if e.DayOfWeek >= 0 && e.DayOfWeek < len(dayNames) {
-				dn = dayNames[e.DayOfWeek]
-			}
-			text := fmt.Sprintf("%s (%s) — %s П%d",
-				subjName(e.SubjectID), teachName(e.TeacherID), dn, e.Timeslot+1)
-			conflictLines = append(conflictLines, pdf.ConflictLine{Text: text})
-		}
-		sort.SliceStable(conflictLines, func(i, j int) bool { return conflictLines[i].Text < conflictLines[j].Text })
 	}
 
 	// Periods.
@@ -986,6 +1024,7 @@ func (a *App) ExportPDF(schoolID int, optionsJSON string) (string, error) {
 		Title:      title,
 		Days:       days,
 		Slots:      slots,
+		DaysMask:   daysMask,
 		Periods:    periods,
 		Mode:       opts.Mode,
 		Rows:       rows,
@@ -1001,22 +1040,27 @@ func (a *App) ExportPDF(schoolID int, optionsJSON string) (string, error) {
 				SubjectID: info.subjectID,
 				TeacherID: info.teacherID,
 				RoomID:    info.roomID,
+				ClassID:   info.classID,
 				Conflict:  info.conflict,
 			}, true
 		},
-		ShowTeacher:    opts.ShowTeacher,
-		ShowRoom:       opts.ShowRoom,
-		WeekdaysOnly:   opts.WeekdaysOnly,
-		BW:             opts.BW,
-		PageSize:       opts.PageSize,
-		Orientation:    opts.Orientation,
-		SubjectName:    subjName,
-		TeacherName:    teachName,
-		RoomName:       roomName,
-		SubjectColor:   subjectColor,
-		LegendSubjects: legend,
-		Conflicts:      conflictLines,
-		GeneratedOn:    time.Now().Format("02.01.2006"),
+		// Имя учителя в ячейке не нужно в режиме «по учителям» — там
+		// учитель и есть владелец страницы (ячейка показывает класс).
+		ShowTeacher: opts.ShowTeacher && opts.Mode != "teacher",
+		// Кабинет в ячейках не нужен: у класса он в подписи («5А-каб:70»),
+		// учитель ходит по ним (см. режим «по учителям»), кабинет — сам
+		// владелец страницы в своём режиме.
+		ShowRoom:     false,
+		WeekdaysOnly: opts.WeekdaysOnly,
+		BW:           opts.BW,
+		PageSize:     opts.PageSize,
+		Orientation:  opts.Orientation,
+		SubjectName:  subjName,
+		ClassName:    className,
+		TeacherName:  teachName,
+		RoomName:     roomName,
+		SubjectColor: subjectColor,
+		GeneratedOn:  time.Now().Format("02.01.2006"),
 	}
 
 	pdfBytes, err := pdf.Render(po)

@@ -23,8 +23,11 @@ func init() {
 }
 
 // ortoolsSolve delegates to the OR-Tools CP-SAT C++ binding.
+// (Примечание: при изменении bind.cpp форсируйте пересборку этого файла —
+// go build не отслеживает bind.o как зависимость пакета.)
 func ortoolsSolve(in SolveInput, parallelism int, timeout time.Duration) (Result, bool) {
-	days := in.Config.DaysPerWeek
+	in, cfgDays := prepareDaysMask(in)
+	days := cfgDays
 	if days <= 0 {
 		days = 6
 	}
@@ -153,6 +156,13 @@ func ortoolsSolve(in SolveInput, parallelism int, timeout time.Duration) (Result
 
 	entries := make([]domain.ScheduleEntry, 0, n)
 	for i := 0; i < n; i++ {
+		// bind.cpp reports the lesson *index* into in.Lessons, not the DB
+		// lesson ID — map it back here. A real ID is required for the
+		// schedule_entries foreign key.
+		li := int(lessonIDs[i])
+		if li < 0 || li >= nl {
+			continue
+		}
 		// When no rooms are defined the solver outputs room_id=0 which
 		// does not exist in the database — skip to avoid FK constraint error.
 		if len(in.Rooms) == 0 && int(outRoomIDs[i]) == 0 {
@@ -160,7 +170,7 @@ func ortoolsSolve(in SolveInput, parallelism int, timeout time.Duration) (Result
 		}
 		entries = append(entries, domain.ScheduleEntry{
 			SchoolID:  in.SchoolID,
-			LessonID:  int(lessonIDs[i]),
+			LessonID:  in.Lessons[li].ID,
 			ClassID:   int(classIDs[i]),
 			TeacherID: int(teacherIDs[i]),
 			SubjectID: int(subjectIDs[i]),

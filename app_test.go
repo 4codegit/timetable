@@ -98,16 +98,16 @@ func TestGenerate(t *testing.T) {
 	if _, err := a.CreateSubject(domain.Subject{SchoolID: id, Name: "Физика", ShortName: "Физ", RequiresRoomType: "any"}); err != nil {
 		t.Fatalf("CreateSubject: %v", err)
 	}
-	if _, err := a.CreateClass(domain.SchoolClass{SchoolID: id, Name: "10А", Grade: 10, StudentCount: 25}); err != nil {
+	if _, err := a.CreateClass(domain.SchoolClass{SchoolID: id, Name: "10А", Grade: 10}); err != nil {
 		t.Fatalf("CreateClass: %v", err)
 	}
-	if _, err := a.CreateClass(domain.SchoolClass{SchoolID: id, Name: "10Б", Grade: 10, StudentCount: 28}); err != nil {
+	if _, err := a.CreateClass(domain.SchoolClass{SchoolID: id, Name: "10Б", Grade: 10}); err != nil {
 		t.Fatalf("CreateClass: %v", err)
 	}
-	if _, err := a.CreateRoom(domain.Room{SchoolID: id, Name: "301", Capacity: 30, RoomType: "any"}); err != nil {
+	if _, err := a.CreateRoom(domain.Room{SchoolID: id, Name: "301", RoomType: "any"}); err != nil {
 		t.Fatalf("CreateRoom: %v", err)
 	}
-	if _, err := a.CreateRoom(domain.Room{SchoolID: id, Name: "302", Capacity: 30, RoomType: "any"}); err != nil {
+	if _, err := a.CreateRoom(domain.Room{SchoolID: id, Name: "302", RoomType: "any"}); err != nil {
 		t.Fatalf("CreateRoom: %v", err)
 	}
 
@@ -148,8 +148,8 @@ func TestGenerate(t *testing.T) {
 		}
 	}
 
-	// Generate schedule
-	res, err := a.Generate(id, 6, 8)
+	// Generate schedule (daysMask 0 = legacy: first 6 days from Monday)
+	res, err := a.Generate(id, 6, 8, 0)
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
@@ -272,7 +272,7 @@ func TestExportImportRoundTripPreservesSchedule(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	room, err := source.CreateRoom(domain.Room{SchoolID: school.ID, Name: "204", Capacity: 28})
+	room, err := source.CreateRoom(domain.Room{SchoolID: school.ID, Name: "204"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -452,11 +452,11 @@ func TestExportPDF(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateSubject: %v", err)
 	}
-	cls, err := a.CreateClass(domain.SchoolClass{SchoolID: id, Name: "10А", Grade: 10, StudentCount: 25})
+	cls, err := a.CreateClass(domain.SchoolClass{SchoolID: id, Name: "10А", Grade: 10})
 	if err != nil {
 		t.Fatalf("CreateClass: %v", err)
 	}
-	rm, err := a.CreateRoom(domain.Room{SchoolID: id, Name: "301", Capacity: 30, RoomType: "any"})
+	rm, err := a.CreateRoom(domain.Room{SchoolID: id, Name: "301", RoomType: "any"})
 	if err != nil {
 		t.Fatalf("CreateRoom: %v", err)
 	}

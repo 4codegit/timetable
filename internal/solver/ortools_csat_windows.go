@@ -69,7 +69,8 @@ func ortoolsSolve(in SolveInput, parallelism int, timeout time.Duration) (Result
 		return Result{}, false
 	}
 
-	days := int32(in.Config.DaysPerWeek)
+	in, cfgDays := prepareDaysMask(in)
+	days := int32(cfgDays)
 	if days <= 0 {
 		days = 6
 	}

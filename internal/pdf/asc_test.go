@@ -47,16 +47,11 @@ func ascTestOptions(mode string, rows []Row, pageSize, orient string, days, slot
 		},
 		TeacherName: func(int) string { return "Иванова И.И." },
 		RoomName:    func(int) string { return "301" },
+		ClassName:   func(int) string { return "5А" },
 		SubjectColor: func(id int) string {
 			palette := []string{"#dbeafe", "#dcfce7", "#fef9c3", "#fae8ff", "#ffedd5", "#cffafe", "#fecaca", "#e0e7ff"}
 			return palette[(id-1)%len(palette)]
 		},
-		LegendSubjects: []LegendItem{
-			{SubjectID: 1, Name: "Алгебра"},
-			{SubjectID: 2, Name: "Физика"},
-			{SubjectID: 3, Name: "Химия"},
-		},
-		Conflicts:   []ConflictLine{{Text: "Алгебра (Ив) — Пн П1"}},
 		GeneratedOn: "05.09.2026",
 	}
 }
@@ -65,24 +60,31 @@ func ascPageCount(b []byte) int {
 	return strings.Count(string(b), "/Type /Page") - strings.Count(string(b), "/Type /Pages")
 }
 
-// TestASCOnePerPageKeepsOnePagePerRow pins the pagination contract: every
-// class/teacher/room row gets exactly one page.
-func TestASCOnePerPageKeepsOnePagePerRow(t *testing.T) {
-	rows := []Row{{ID: 1, Label: "10А"}, {ID: 2, Label: "10Б"}, {ID: 3, Label: "11А"}, {ID: 4, Label: "11Б"}}
-	opts := ascTestOptions("class", rows, "A4", "landscape", 5, 6)
-	b, err := Render(opts)
+// TestASCPrintOnePagePerRow pins the aSc-print pagination contract: the
+// black-and-white grid always fits, so every row takes exactly one page.
+func TestASCPrintOnePagePerRow(t *testing.T) {
+	rows := []Row{{ID: 1, Label: "10А"}, {ID: 2, Label: "10Б"}, {ID: 3, Label: "11А"}}
+	b, err := Render(ascTestOptions("class", rows, "A4", "landscape", 5, 6))
 	if err != nil {
 		t.Fatalf("Render: %v", err)
 	}
 	if got := ascPageCount(b); got != len(rows) {
-		t.Fatalf("expected %d pages, got %d", len(rows), got)
+		t.Fatalf("expected %d pages (one per row), got %d", len(rows), got)
+	}
+	one := []Row{{ID: 1, Label: "10А"}}
+	b, err = Render(ascTestOptions("teacher", one, "A4", "landscape", 5, 6))
+	if err != nil {
+		t.Fatalf("Render single: %v", err)
+	}
+	if got := ascPageCount(b); got != 1 {
+		t.Fatalf("single row: expected 1 page, got %d", got)
 	}
 }
 
-// TestASCPosterFitsOneSheet pins the poster contract: a moderate school
-// (12 classes) fits on a single A3 sheet, while a big school (40 classes
-// on A4) flows onto several pages.
-func TestASCPosterFitsOneSheet(t *testing.T) {
+// TestASCPrintUnifiedModes pins the unified-style contract: the "school"
+// mode packs per-class aSc-style tables onto few sheets (a class never
+// gets a whole sheet), other row modes take one page per row.
+func TestASCPrintUnifiedModes(t *testing.T) {
 	mkRows := func(n int) []Row {
 		rows := make([]Row, 0, n)
 		for i := 1; i <= n; i++ {
@@ -92,17 +94,55 @@ func TestASCPosterFitsOneSheet(t *testing.T) {
 	}
 	b, err := Render(ascTestOptions("school", mkRows(12), "A3", "landscape", 5, 8))
 	if err != nil {
-		t.Fatalf("Render A3: %v", err)
+		t.Fatalf("Render school A3: %v", err)
 	}
-	if got := ascPageCount(b); got != 1 {
-		t.Fatalf("expected 12 classes on one A3 sheet, got %d pages", got)
+	if got := ascPageCount(b); got < 1 || got >= 12 {
+		t.Fatalf("school packed: expected few pages for 12 classes, got %d", got)
 	}
-	b, err = Render(ascTestOptions("school", mkRows(40), "A4", "portrait", 5, 8))
+	cls := []Row{{ID: 1, Label: "10А"}, {ID: 2, Label: "10Б"}, {ID: 3, Label: "11А"}}
+	b, err = Render(ascTestOptions("class", cls, "A4", "landscape", 5, 6))
 	if err != nil {
-		t.Fatalf("Render A4: %v", err)
+		t.Fatalf("Render class: %v", err)
 	}
-	if got := ascPageCount(b); got < 2 || got > 40 {
-		t.Fatalf("40 classes on A4: pages out of bounds: %d", got)
+	if got := ascPageCount(b); got != len(cls) {
+		t.Fatalf("class mode: expected %d pages (one per row), got %d", len(cls), got)
+	}
+}
+
+// TestASCDaysMask makes sure a school-day mask renders exactly the
+// masked weekdays and survives a degenerate (empty) mask.
+func TestASCDaysMask(t *testing.T) {
+	// activeDays unit behavior.
+	if got := activeDays(6, 0); len(got) != 6 || got[5] != 5 {
+		t.Fatalf("activeDays(6,0) = %v", got)
+	}
+	if got := activeDays(6, 0b11111); len(got) != 5 || got[4] != 4 {
+		t.Fatalf("activeDays(6,0b11111) = %v", got)
+	}
+	if got := activeDays(5, 0b100000); len(got) != 1 || got[0] != 5 {
+		t.Fatalf("activeDays(5,0b100000) = %v", got)
+	}
+	if got := activeDays(5, 0); len(got) != 5 || got[4] != 4 {
+		t.Fatalf("activeDays(5,0) = %v", got)
+	}
+	// Пн, Вт, Чт, Пт, Сб (без среды) — полный рендер без паники.
+	for _, mode := range []string{"class", "school"} {
+		rows := []Row{{ID: 1, Label: "10А"}, {ID: 2, Label: "10Б"}}
+		opts := ascTestOptions(mode, rows, "A4", "landscape", 6, 8)
+		opts.DaysMask = 0b1111011
+		b, err := Render(opts)
+		if err != nil {
+			t.Fatalf("%s: Render: %v", mode, err)
+		}
+		if len(b) < 1000 {
+			t.Fatalf("%s: suspiciously small PDF", mode)
+		}
+	}
+	// Вырожденная маска без единого дня — не должна ломать рендер.
+	opts := ascTestOptions("class", []Row{{ID: 1, Label: "10А"}}, "A4", "landscape", 5, 6)
+	opts.DaysMask = 0b100000 // только суббота при Days=5 → едиственная колонка
+	if _, err := Render(opts); err != nil {
+		t.Fatalf("saturday-only mask: %v", err)
 	}
 }
 
@@ -115,9 +155,22 @@ func TestASCEdgeCases(t *testing.T) {
 	}{
 		{"empty school", ascTestOptions("school", nil, "A4", "landscape", 5, 6)},
 		{"14 slots", ascTestOptions("class", []Row{{ID: 1, Label: "10А"}}, "A4", "portrait", 5, 14)},
-		{"bw poster", func() Options { o := ascTestOptions("school", []Row{{ID: 1, Label: "10А"}, {ID: 2, Label: "10Б"}}, "A3", "landscape", 6, 8); o.BW = true; return o }()},
-		{"weekdays only", func() Options { o := ascTestOptions("class", []Row{{ID: 1, Label: "10А"}}, "A4", "portrait", 6, 8); o.WeekdaysOnly = true; return o }()},
-		{"no teacher no room", func() Options { o := ascTestOptions("teacher", []Row{{ID: 1, Label: "Иванова И.И."}}, "A4", "portrait", 5, 8); o.ShowTeacher = false; o.ShowRoom = false; return o }()},
+		{"bw poster", func() Options {
+			o := ascTestOptions("school", []Row{{ID: 1, Label: "10А"}, {ID: 2, Label: "10Б"}}, "A3", "landscape", 6, 8)
+			o.BW = true
+			return o
+		}()},
+		{"weekdays only", func() Options {
+			o := ascTestOptions("class", []Row{{ID: 1, Label: "10А"}}, "A4", "portrait", 6, 8)
+			o.WeekdaysOnly = true
+			return o
+		}()},
+		{"no teacher no room", func() Options {
+			o := ascTestOptions("teacher", []Row{{ID: 1, Label: "Иванова И.И."}}, "A4", "portrait", 5, 8)
+			o.ShowTeacher = false
+			o.ShowRoom = false
+			return o
+		}()},
 	}
 	for _, tc := range cases {
 		b, err := Render(tc.opts)

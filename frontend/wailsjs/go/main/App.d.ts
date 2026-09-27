@@ -40,9 +40,9 @@ export function ExportPDF(arg1:number,arg2:string):Promise<string>;
 
 export function ExportRefsCSV(arg1:number,arg2:string):Promise<string>;
 
-export function Generate(arg1:number,arg2:number,arg3:number):Promise<solver.Result>;
+export function Generate(arg1:number,arg2:number,arg3:number,arg4:number):Promise<solver.Result>;
 
-export function GeneratePrecise(arg1:number,arg2:number,arg3:number):Promise<solver.Result>;
+export function GeneratePrecise(arg1:number,arg2:number,arg3:number,arg4:number):Promise<solver.Result>;
 
 export function GetSchoolSettings(arg1:number):Promise<string>;
 
@@ -89,5 +89,13 @@ export function SchoolHasSchedule(arg1:number):Promise<boolean>;
 export function SwapEntries(arg1:number,arg2:number,arg3:number,arg4:number,arg5:number,arg6:number):Promise<void>;
 
 export function UpdateLesson(arg1:domain.Lesson):Promise<domain.Lesson>;
+
+export function UpdateTeacher(arg1:domain.Teacher):Promise<void>;
+
+export function UpdateSubject(arg1:domain.Subject):Promise<void>;
+
+export function UpdateClass(arg1:domain.SchoolClass):Promise<void>;
+
+export function UpdateRoom(arg1:domain.Room):Promise<void>;
 
 export function UpdateSchoolSettings(arg1:number,arg2:string):Promise<void>;

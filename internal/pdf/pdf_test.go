@@ -33,12 +33,9 @@ func TestRenderPosterSmoke(t *testing.T) {
 		},
 		TeacherName:  func(int) string { return "Иванова И.И." },
 		RoomName:     func(int) string { return "301" },
+		ClassName:    func(int) string { return "5А" },
 		SubjectColor: func(int) string { return "#dbeafe" },
-		LegendSubjects: []LegendItem{
-			{SubjectID: 10, Name: "Математика"},
-		},
-		Conflicts:   []ConflictLine{{Text: "Математика (Ив) — Пн П1"}},
-		GeneratedOn: "05.09.2026",
+		GeneratedOn:  "05.09.2026",
 	}
 	b, err := Render(opts)
 	if err != nil {
@@ -52,9 +49,9 @@ func TestRenderPosterSmoke(t *testing.T) {
 	}
 }
 
-// TestRenderOnePerPageSmoke renders per-class pages and checks pagination
-// plus page-number footer do not crash the renderer.
-func TestRenderOnePerPageSmoke(t *testing.T) {
+// TestRenderCompactSmoke renders the diary per-class pages and checks
+// pagination plus the page-number footer do not crash the renderer.
+func TestRenderCompactSmoke(t *testing.T) {
 	opts := Options{
 		SchoolName: "Тестовая школа",
 		Title:      "по классам",
@@ -76,6 +73,7 @@ func TestRenderOnePerPageSmoke(t *testing.T) {
 		SubjectName:  func(int) string { return "Физика" },
 		TeacherName:  func(int) string { return "Петров П.П." },
 		RoomName:     func(int) string { return "203" },
+		ClassName:    func(int) string { return "9В" },
 		SubjectColor: func(int) string { return "#dcfce7" },
 		GeneratedOn:  "05.09.2026",
 	}
@@ -87,8 +85,9 @@ func TestRenderOnePerPageSmoke(t *testing.T) {
 		t.Fatalf("PDF suspiciously small: %d bytes", len(b))
 	}
 	// A PDF with N pages contains N "/Type /Page" objects (not /Pages).
+	// aSc print style: exactly one page per row.
 	pages := strings.Count(string(b), "/Type /Page") - strings.Count(string(b), "/Type /Pages")
-	if pages != 3 {
-		t.Fatalf("expected 3 pages, got %d", pages)
+	if pages != len(opts.Rows) {
+		t.Fatalf("expected %d pages (one per row), got %d", len(opts.Rows), pages)
 	}
 }

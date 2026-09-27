@@ -38,12 +38,57 @@ type Result struct {
 	Violations int                    `json:"violations"` // soft constraint violations
 }
 
+// prepareDaysMask applies Config.DaysMask (school-day checkboxes): the
+// grid shrinks/grows to cover the highest active weekday and every
+// inactive day becomes a hard class_unavailable constraint, which all
+// three engines (heuristic backtracking, OR-Tools CP-SAT, its Windows
+// twin) already understand. Returns the adjusted input and the effective
+// day count.
+func prepareDaysMask(in SolveInput) (SolveInput, int) {
+	mask := in.Config.DaysMask
+	if mask == 0 {
+		return in, in.Config.DaysPerWeek
+	}
+	days := 0
+	for d := 0; d < 7; d++ {
+		if mask&(1<<d) != 0 {
+			days = d + 1
+		}
+	}
+	if in.Config.DaysPerWeek > days {
+		days = in.Config.DaysPerWeek
+	}
+	out := in
+	out.Constraints = append([]domain.Constraint(nil), in.Constraints...)
+	classIDs := map[int]bool{}
+	for _, l := range in.Lessons {
+		classIDs[l.ClassID] = true
+	}
+	for d := 0; d < days; d++ {
+		if mask&(1<<d) != 0 {
+			continue
+		}
+		dow := d
+		for cid := range classIDs {
+			out.Constraints = append(out.Constraints, domain.Constraint{
+				Type:       "class_unavailable",
+				EntityType: "class",
+				EntityID:   cid,
+				DayOfWeek:  &dow,
+				IsHard:     true,
+			})
+		}
+	}
+	return out, days
+}
+
 // Solve runs parallel randomised-restart CSP search.
 func Solve(ctx context.Context, in SolveInput, parallelism int, timeout time.Duration) Result {
 	if parallelism < 1 {
 		parallelism = 1
 	}
-	days := in.Config.DaysPerWeek
+	in, cfgDays := prepareDaysMask(in)
+	days := cfgDays
 	if days <= 0 {
 		days = 6
 	}
@@ -93,7 +138,14 @@ func runRestarts(ctx context.Context, in SolveInput, occ []Occurrence, hard Hard
 		if time.Now().After(deadline) {
 			break
 		}
-		r := backtrack(in, occ, hard, days, slots, rng)
+		// Короткие попытки: на большой школе один перебор может съесть
+		// весь дедлайн — ограничиваем 5 секундами, чтобы рестарты
+		// продолжались и лучшее частичное решение накапливалось.
+		attemptDl := time.Now().Add(5 * time.Second)
+		if attemptDl.After(deadline) {
+			attemptDl = deadline
+		}
+		r := backtrackDl(in, occ, hard, days, slots, rng, attemptDl)
 		if r.Placed > best.Placed || (r.Placed == best.Placed && r.Violations < best.Violations) {
 			best = r
 		}
@@ -111,6 +163,15 @@ func runRestarts(ctx context.Context, in SolveInput, occ []Occurrence, hard Hard
 }
 
 func backtrack(in SolveInput, occ []Occurrence, hard HardSet, days, slots int, rng *rand.Rand) Result {
+	return backtrackDl(in, occ, hard, days, slots, rng, time.Time{})
+}
+
+// backtrackDl — то же самое, но с жёстким дедлайном ВНУТРИ перебора:
+// на больших школах (сотни уроков) один вызов перебора без проверки
+// времени уходил в экспоненциальный откат на часы, игнорируя дедлайн
+// рестартов. Проверка каждые 4096 узлов прерывает поиск — наверх идёт
+// лучшее найденное к этому моменту.
+func backtrackDl(in SolveInput, occ []Occurrence, hard HardSet, days, slots int, rng *rand.Rand, deadline time.Time) Result {
 	// Order occurrences: most constrained first (fewest room choices).
 	order := make([]int, len(occ))
 	for i := range occ {
@@ -171,9 +232,18 @@ func backtrack(in SolveInput, occ []Occurrence, hard HardSet, days, slots int, r
 	assign := make([]cell, len(occ))
 	var solution []cell
 	ok := false
+	nodes := 0
+	aborted := false
 
 	var rec func(k int) bool
 	rec = func(k int) bool {
+		if aborted {
+			return false
+		}
+		if nodes++; nodes&4095 == 0 && !deadline.IsZero() && time.Now().After(deadline) {
+			aborted = true
+			return false
+		}
 		if k == len(order) {
 			entries := buildEntries(in, assign, occ)
 			if !validateAggregates(in, ss, entries, days, slots) {
@@ -229,6 +299,12 @@ func backtrack(in SolveInput, occ []Occurrence, hard HardSet, days, slots int, r
 			if rec(k + 1) {
 				return true
 			}
+			if aborted {
+				// Прерваны по дедлайну: оставляем текущую цепочку
+				// размещений в assign как частичное решение (карты
+				// занятости локальны для попытки и будут выброшены).
+				return false
+			}
 			teacherBusy[tID][cc.day][cc.slot] = false
 			for _, cid := range cset {
 				classBusy[cid][cc.day][cc.slot] = false
@@ -236,6 +312,10 @@ func backtrack(in SolveInput, occ []Occurrence, hard HardSet, days, slots int, r
 			roomBusy[cc.room][cc.day][cc.slot] = false
 			teacherDay[tID][cc.day]--
 			classDay[cID][cc.day]--
+			// ВАЖНО: очищаем и саму ячейку — иначе после отката в assign
+			// остаётся «призрачный» урок, и частичный результат получает
+			// двойные брони (весь интерфейс краснел от конфликтов).
+			assign[oi] = cell{}
 		}
 		return false
 	}
@@ -244,6 +324,18 @@ func backtrack(in SolveInput, occ []Occurrence, hard HardSet, days, slots int, r
 	if ok {
 		entries := buildEntries(in, solution, occ)
 		return Result{Entries: entries, Placed: len(occ), Total: len(occ), Violations: softViolations(in, entries, days)}
+	}
+	// Прерваны по дедлайну: возвращаем частичное размещение — assign
+	// содержит все успешно поставленные на данный момент уроки.
+	placed := 0
+	for _, c := range assign {
+		if c.room != 0 {
+			placed++
+		}
+	}
+	if placed > 0 {
+		entries := buildEntries(in, assign, occ)
+		return Result{Entries: entries, Placed: len(entries), Total: len(occ), Violations: softViolations(in, entries, days)}
 	}
 	return Result{Entries: nil, Placed: 0, Total: len(occ)}
 }
@@ -670,9 +762,17 @@ func HasPreciseSolver() bool {
 // pure-Go backtracking solver so the default build always works.
 func SolvePrecise(ctx context.Context, in SolveInput, parallelism int, timeout time.Duration) Result {
 	if preciseSolver != nil {
-		if r, ok := preciseSolver(in, parallelism, timeout); ok {
-			return r
+		r, ok := preciseSolver(in, parallelism, timeout)
+		if ok && r.Placed >= r.Total {
+			return r // всё размещено — эвристика не нужна
 		}
+		// Школа перегружена или модель тяжёлая: эвристика может
+		// разместить больше — считаем её и берём лучший результат.
+		h := Solve(ctx, in, parallelism, timeout)
+		if h.Placed > r.Placed || !ok {
+			return h
+		}
+		return r
 	}
 	return Solve(ctx, in, parallelism, timeout)
 }

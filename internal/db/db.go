@@ -69,14 +69,13 @@ func (s *Store) migrate() error {
 			school_id INTEGER REFERENCES schools(id) ON DELETE CASCADE,
 			name TEXT NOT NULL,
 			grade INTEGER DEFAULT 0,
-			student_count INTEGER DEFAULT 0,
+			room_id INTEGER REFERENCES rooms(id),
 			subgroup_of INTEGER REFERENCES classes(id) ON DELETE CASCADE
 		)`,
 		`CREATE TABLE IF NOT EXISTS rooms (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			school_id INTEGER REFERENCES schools(id) ON DELETE CASCADE,
 			name TEXT NOT NULL,
-			capacity INTEGER DEFAULT 30,
 			room_type TEXT DEFAULT 'any'
 		)`,
 		`CREATE TABLE IF NOT EXISTS lessons (
@@ -121,6 +120,92 @@ func (s *Store) migrate() error {
 		if _, err := s.db.Exec(st); err != nil {
 			return err
 		}
+	}
+
+	// Нормализация: кабинет класса — отдельное поле room_id, а количество
+	// мест/учеников не хранится вовсе. Старые таблицы пересоздаются.
+	rebuild := func(table string, createSQL string, copySQL string) error {
+		if _, err := s.db.Exec(`PRAGMA foreign_keys=OFF`); err != nil {
+			return err
+		}
+		defer s.db.Exec(`PRAGMA foreign_keys=ON`)
+		steps := []string{
+			`DROP TABLE IF EXISTS ` + table + `_new`,
+			`CREATE TABLE ` + table + `_new (` + createSQL + `)`,
+			copySQL,
+			`DROP TABLE ` + table,
+			`ALTER TABLE ` + table + `_new RENAME TO ` + table,
+		}
+		for _, st := range steps {
+			if _, err := s.db.Exec(st); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
+	colExists := func(table, col string) bool {
+		found := false
+		rows, err := s.db.Query(`PRAGMA table_info(` + table + `)`)
+		if err != nil {
+			return false
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var cid int
+			var name, ctype string
+			var notnull, pk int
+			var dflt sql.NullString
+			if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err == nil && name == col {
+				found = true
+			}
+		}
+		return found
+	}
+
+	if colExists("classes", "student_count") {
+		// В старой таблице room_id могло не быть — копируем NULL.
+		roomSel := "NULL"
+		if colExists("classes", "room_id") {
+			roomSel = "COALESCE(room_id, 0)"
+		}
+		if err := rebuild("classes",
+			`id INTEGER PRIMARY KEY AUTOINCREMENT,
+			 school_id INTEGER REFERENCES schools(id) ON DELETE CASCADE,
+			 name TEXT NOT NULL,
+			 grade INTEGER DEFAULT 0,
+			 room_id INTEGER REFERENCES rooms(id),
+			 subgroup_of INTEGER REFERENCES classes(id) ON DELETE CASCADE`,
+			`INSERT INTO classes_new SELECT id, school_id, name, grade, ` + roomSel + `, subgroup_of FROM classes`); err != nil {
+			return err
+		}
+	}
+	if colExists("rooms", "capacity") {
+		if err := rebuild("rooms",
+			`id INTEGER PRIMARY KEY AUTOINCREMENT,
+			 school_id INTEGER REFERENCES schools(id) ON DELETE CASCADE,
+			 name TEXT NOT NULL,
+			 room_type TEXT DEFAULT 'any'`,
+			`INSERT INTO rooms_new SELECT id, school_id, name, room_type FROM rooms`); err != nil {
+			return err
+		}
+	}
+	if !colExists("classes", "room_id") {
+		if _, err := s.db.Exec(`ALTER TABLE classes ADD COLUMN room_id INTEGER REFERENCES rooms(id)`); err != nil {
+			return err
+		}
+	}
+	// Разбор имён вида «10А-каб:101»: суффикс уходит в room_id (если такой
+	// кабинет существует и имя без суффикса свободно).
+	if _, err := s.db.Exec(`UPDATE classes
+		SET room_id = (SELECT r.id FROM rooms r WHERE r.name = trim(substr(name, instr(name, '-каб:') + 5))),
+		    name = trim(substr(name, 1, instr(name, '-каб:') - 1))
+		WHERE instr(name, '-каб:') > 0
+		  AND EXISTS (SELECT 1 FROM rooms r WHERE r.name = trim(substr(name, instr(name, '-каб:') + 5)))
+		  AND NOT EXISTS (SELECT 1 FROM classes c2
+		                  WHERE c2.name = trim(substr(name, 1, instr(name, '-каб:') - 1))
+		                  AND c2.id != classes.id)`); err != nil {
+		return err
 	}
 	return nil
 }
@@ -253,8 +338,8 @@ func (s *Store) ListSubjects(schoolID int) ([]domain.Subject, error) {
 // ---- Classes ----
 
 func (s *Store) CreateClass(c domain.SchoolClass) (*domain.SchoolClass, error) {
-	res, err := s.db.Exec(`INSERT INTO classes (school_id, name, grade, student_count, subgroup_of) VALUES (?,?,?,?,?)`,
-		c.SchoolID, c.Name, c.Grade, c.StudentCount, c.SubgroupOf)
+	res, err := s.db.Exec(`INSERT INTO classes (school_id, name, grade, room_id, subgroup_of) VALUES (?,?,?,?,?)`,
+		c.SchoolID, c.Name, c.Grade, nullableID(c.RoomID), c.SubgroupOf)
 	if err != nil {
 		return nil, err
 	}
@@ -264,7 +349,7 @@ func (s *Store) CreateClass(c domain.SchoolClass) (*domain.SchoolClass, error) {
 }
 
 func (s *Store) ListClasses(schoolID int) ([]domain.SchoolClass, error) {
-	rows, err := s.db.Query(`SELECT id, school_id, name, grade, student_count, subgroup_of FROM classes WHERE school_id=?`, schoolID)
+	rows, err := s.db.Query(`SELECT id, school_id, name, grade, COALESCE(room_id, 0), subgroup_of FROM classes WHERE school_id=?`, schoolID)
 	if err != nil {
 		return nil, err
 	}
@@ -273,7 +358,7 @@ func (s *Store) ListClasses(schoolID int) ([]domain.SchoolClass, error) {
 	for rows.Next() {
 		var c domain.SchoolClass
 		var sub sql.NullInt32
-		if err := rows.Scan(&c.ID, &c.SchoolID, &c.Name, &c.Grade, &c.StudentCount, &sub); err != nil {
+		if err := rows.Scan(&c.ID, &c.SchoolID, &c.Name, &c.Grade, &c.RoomID, &sub); err != nil {
 			return nil, err
 		}
 		if sub.Valid {
@@ -295,8 +380,8 @@ func (s *Store) UpdateClassSubgroup(id int, parent *int) error {
 // ---- Rooms ----
 
 func (s *Store) CreateRoom(r domain.Room) (*domain.Room, error) {
-	res, err := s.db.Exec(`INSERT INTO rooms (school_id, name, capacity, room_type) VALUES (?,?,?,?)`,
-		r.SchoolID, r.Name, r.Capacity, orDefault(r.RoomType, "any"))
+	res, err := s.db.Exec(`INSERT INTO rooms (school_id, name, room_type) VALUES (?,?,?)`,
+		r.SchoolID, r.Name, orDefault(r.RoomType, "any"))
 	if err != nil {
 		return nil, err
 	}
@@ -306,7 +391,7 @@ func (s *Store) CreateRoom(r domain.Room) (*domain.Room, error) {
 }
 
 func (s *Store) ListRooms(schoolID int) ([]domain.Room, error) {
-	rows, err := s.db.Query(`SELECT id, school_id, name, capacity, room_type FROM rooms WHERE school_id=?`, schoolID)
+	rows, err := s.db.Query(`SELECT id, school_id, name, room_type FROM rooms WHERE school_id=?`, schoolID)
 	if err != nil {
 		return nil, err
 	}
@@ -314,7 +399,7 @@ func (s *Store) ListRooms(schoolID int) ([]domain.Room, error) {
 	var out []domain.Room
 	for rows.Next() {
 		var r domain.Room
-		if err := rows.Scan(&r.ID, &r.SchoolID, &r.Name, &r.Capacity, &r.RoomType); err != nil {
+		if err := rows.Scan(&r.ID, &r.SchoolID, &r.Name, &r.RoomType); err != nil {
 			return nil, err
 		}
 		out = append(out, r)
@@ -362,6 +447,38 @@ func (s *Store) DeleteLesson(id int) error {
 func (s *Store) UpdateLesson(l domain.Lesson) error {
 	_, err := s.db.Exec(`UPDATE lessons SET class_id=?, subject_id=?, teacher_id=?, hours_per_week=?, min_gap_days=?, can_split=?, preferred_rooms=? WHERE id=?`,
 		l.ClassID, l.SubjectID, l.TeacherID, l.HoursPerWeek, l.MinGapDays, l.CanSplit, orDefault(l.PreferredRooms, "[]"), l.ID)
+	return err
+}
+
+func (s *Store) UpdateTeacher(t domain.Teacher) error {
+	_, err := s.db.Exec(`UPDATE teachers SET name=?, short_name=?, max_hours_per_week=?, preferences_json=? WHERE id=?`,
+		t.Name, t.ShortName, t.MaxHoursPerWeek, orDefault(t.PreferencesJSON, "{}"), t.ID)
+	return err
+}
+
+func (s *Store) UpdateSubject(sub domain.Subject) error {
+	_, err := s.db.Exec(`UPDATE subjects SET name=?, short_name=?, requires_room_type=? WHERE id=?`,
+		sub.Name, sub.ShortName, sub.RequiresRoomType, sub.ID)
+	return err
+}
+
+// nullableID: 0 → NULL (ссылка на кабинет необязательна, а 0 нарушил бы FK).
+func nullableID(id int) interface{} {
+	if id == 0 {
+		return nil
+	}
+	return id
+}
+
+func (s *Store) UpdateClass(c domain.SchoolClass) error {
+	_, err := s.db.Exec(`UPDATE classes SET name=?, grade=?, room_id=? WHERE id=?`,
+		c.Name, c.Grade, nullableID(c.RoomID), c.ID)
+	return err
+}
+
+func (s *Store) UpdateRoom(r domain.Room) error {
+	_, err := s.db.Exec(`UPDATE rooms SET name=?, room_type=? WHERE id=?`,
+		r.Name, orDefault(r.RoomType, "any"), r.ID)
 	return err
 }
 

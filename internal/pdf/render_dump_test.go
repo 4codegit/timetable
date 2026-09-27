@@ -38,15 +38,10 @@ func TestDumpSamplesForVisualCheck(t *testing.T) {
 		SubjectName: func(int) string { return "Математика" },
 		TeacherName: func(int) string { return "Иванова" },
 		RoomName:    func(int) string { return "301" },
+		ClassName:   func(int) string { return "5А" },
 		SubjectColor: func(id int) string {
 			return [6]string{"#dbeafe", "#dcfce7", "#fef9c3", "#fae8ff", "#ffedd5", "#cffafe"}[id%6]
 		},
-		LegendSubjects: []LegendItem{
-			{SubjectID: 0, Name: "Математика"}, {SubjectID: 1, Name: "Русский язык"},
-			{SubjectID: 2, Name: "Литература"}, {SubjectID: 3, Name: "Английский язык"},
-			{SubjectID: 4, Name: "История"}, {SubjectID: 5, Name: "Физика"},
-		},
-		Conflicts:   []ConflictLine{{Text: "Математика (Иванова) — Вт П3: 6А и 8Б одновременно в 301"}},
 		GeneratedOn: "05.09.2026",
 	}
 	b, err := Render(poster)
@@ -60,7 +55,6 @@ func TestDumpSamplesForVisualCheck(t *testing.T) {
 	one.Title = "по классам"
 	one.PageSize = "A4"
 	one.Orientation = "landscape"
-	one.Conflicts = nil
 	b2, err := Render(one)
 	if err != nil {
 		t.Fatalf("one-per-page render: %v", err)

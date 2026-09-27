@@ -1,6 +1,7 @@
 # Build output
 /timetable
 /timetable.exe
+/dist/
 /build/
 
 # Database
@@ -26,5 +27,12 @@ wailsjs/
 # AppImage
 *.AppImage
 
-# Distribution
-dist/
+# Distribution (только корневая папка сборки; frontend/dist нужен для go:embed)
+/dist/
+
+# OR-Tools дистрибутив скачивается скриптом scripts/build_ortools.sh
+third_party/ortools/
+third_party/ortools_bind/bind.o
+
+# Personal files accidentally placed inside the repo (not part of the project)
+narziev/

@@ -70,7 +70,7 @@ extern "C" ScheduleResult* ortools_solve(
     for (int d = 0; d < D; ++d)
       for (int s = 0; s < S; ++s)
         for (int r = 0; r < R; ++r) vars.push_back(x[o][d][s][r]);
-    cp.AddExactlyOne(vars);
+    cp.AddAtMostOne(vars);
   }
 
   // room-type compatibility (req_type 0 means any)
@@ -235,18 +235,40 @@ extern "C" ScheduleResult* ortools_solve(
     }
   }
 
-  if (!penalties.empty()) {
-    LinearExpr obj = penalties[0];
-    for (size_t i = 1; i < penalties.size(); ++i) obj = obj + penalties[i];
-    cp.Minimize(obj);
+  // Максимизируем количество размещённых уроков (школа может быть
+  // перегружена — кабинетов меньше, чем нужно для всех уроков). Цель
+  // собираем из компактных IntVar (по одной на урок), а не из сотен
+  // тысяч bool-термов — иначе сборка/прешолв съедали весь тайм-лимит.
+  // Штрафы добавляются с весом (O+1): размещение важнее штрафа.
+  std::vector<IntVar> placedVars;
+  for (int o = 0; o < O; ++o) {
+    std::vector<BoolVar> vars;
+    for (int d = 0; d < D; ++d)
+      for (int s = 0; s < S; ++s)
+        for (int r = 0; r < R; ++r) vars.push_back(x[o][d][s][r]);
+    IntVar placed = cp.NewIntVar(Domain(0, 1));
+    cp.AddEquality(LinearExpr::Sum(vars), placed);
+    placedVars.push_back(placed);
   }
+  LinearExpr obj = -LinearExpr::Sum(placedVars) * static_cast<int64_t>(O + 1);
+  for (size_t i = 0; i < penalties.size(); ++i) obj = obj + penalties[i];
+  cp.Minimize(obj);
 
   SatParameters params;
   params.set_max_time_in_seconds(static_cast<double>(time_limit_ms) / 1000.0);
   if (workers > 0) params.set_num_search_workers(workers);
+  // Перегруженная школа: максимум размещённых — тяжёлая оптимизация,
+  // ждём только ПЕРВОЕ найденное решение (дальше улучшит эвристика).
+  params.set_stop_after_first_solution(true);
 
   CpModelProto model_proto = cp.Build();
   const CpSolverResponse response = SolveWithParameters(model_proto, params);
+  {
+    // Диагностика в stdout сервера: статус,_solution и время.
+    std::fprintf(stderr, "[ortools] status=%d wall_time=%.1fs\n",
+                 static_cast<int>(response.status()),
+                 response.wall_time());
+  }
   if (response.status() != CpSolverStatus::OPTIMAL &&
       response.status() != CpSolverStatus::FEASIBLE) {
     return nullptr;

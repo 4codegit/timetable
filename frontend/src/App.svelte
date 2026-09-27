@@ -6,6 +6,7 @@
                 CreateLesson, ListLessons, DeleteLesson, UpdateLesson,
                 CreateConstraint, ListConstraints, DeleteConstraint,
                 DeleteTeacher, DeleteSubject, DeleteClass, DeleteRoom, DeleteScheduleEntry, SaveExport,
+                UpdateTeacher, UpdateSubject, UpdateClass, UpdateRoom,
                 Generate, GeneratePrecise, MoveEntry, SwapEntries, ReplaceSchedule, ListSchedule, ExportAll, ImportAll, ScheduleCSV, ExportRefsCSV, ImportRefsCSV, GetSchoolSettings, UpdateSchoolSettings, HasPreciseSolver, ExportPDF
         } from "../wailsjs/go/main/App";
         import { onMount } from "svelte";
@@ -14,7 +15,7 @@
         let activeSchoolID = 0;
         let newSchoolName = "Моя школа";
         let tab = "refs";
-        const APP_VERSION = "1.8.0";
+        const APP_VERSION = "1.10.0";
         let msg = "";
 
         let teachers = [], subjects = [], classes = [], rooms = [], lessons = [], constraints = [], schedule = [];
@@ -22,21 +23,77 @@
         // form models
         let t = { name: "", short_name: "", max_hours_per_week: 30 };
         let s = { name: "", short_name: "", requires_room_type: "any" };
-        let c = { name: "", grade: 0, student_count: 0, subgroup_of: null };
-        let r = { name: "", capacity: 30, room_type: "any" };
+        let c = { name: "", grade: 0, room_id: 0, subgroup_of: null };
+        let r = { name: "", room_type: "any" };
         let l = { class_id: 0, subject_id: 0, teacher_id: 0, hours_per_week: 1, min_gap_days: 1, can_split: false, preferred_rooms: "[]" };
         let curClass = 0;
-        let con = { type: "teacher_unavailable", entity_type: "teacher", entity_id: 0, day_of_week: null, timeslot_start: null, timeslot_end: null, weight: 100, is_hard: true };
-        function resetConstraintFields() {
-                // Clear fields that are not relevant for the newly-selected constraint type
-                // so we don't accidentally send stale values to the solver.
-                const f = constraintFields(con.type);
-                if (!f.day) con.day_of_week = null;
-                if (!f.slots) { con.timeslot_start = null; con.timeslot_end = null; }
-                if (!f.value) con.weight = 100;
+        // Инлайн-редактирование справочников: ✎ переводит строку в режим
+        // правки, ✓ сохраняет в БД, ✗ откатывает (перезагрузкой справочников).
+        let editing = null; // { kind, id }
+        function startEdit(kind, id) { editing = { kind, id }; }
+        async function cancelEdit() { editing = null; await reloadRefs(); }
+        async function saveEdit(kind, x) {
+                if (kind === "teacher") await UpdateTeacher({ id: x.id, school_id: x.school_id, name: x.name, short_name: x.short_name, max_hours_per_week: x.max_hours_per_week || 0, preferences_json: x.preferences_json || "{}" });
+                else if (kind === "subject") await UpdateSubject({ id: x.id, school_id: x.school_id, name: x.name, short_name: x.short_name, requires_room_type: x.requires_room_type || "any" });
+                else if (kind === "class") await UpdateClass({ id: x.id, school_id: x.school_id, name: x.name, grade: x.grade || 0, room_id: x.room_id || 0 });
+                else if (kind === "room") await UpdateRoom({ id: x.id, school_id: x.school_id, name: x.name, room_type: x.room_type || "any" });
+                editing = null;
+                await reloadRefs();
+                flash("Изменения сохранены");
+        }
+        // Визуальный редактор запретов: выбираем учителя/класс/кабинет и
+        // кликаем по ячейкам сетки — запрет ставится/снимается сразу.
+        let consPickKind = "teacher";
+        let consPickId = 0;
+        $: consPickList = consPickKind === "teacher" ? teachers
+                : consPickKind === "class" ? classes : rooms;
+        // Эффективная сущность: выбранная или первая из списка (без записи
+        // обратно в состояние — иначе цикл зависимостей).
+        $: consPickEntity = consPickList.find((x) => x.id === consPickId) || consPickList[0] || null;
+        function setPickKind(kind) { consPickKind = kind; }
+        function pickName(x) { return x.name || ""; }
+        // Ограничения «недоступен», покрывающие ячейку (day, slot).
+        function coveringConstraints(day, slot) {
+                if (!consPickEntity) return [];
+                return constraints.filter((c) =>
+                        c.entity_type === consPickKind && c.entity_id === consPickEntity.id && c.is_hard &&
+                        (c.type === "teacher_unavailable" || c.type === "class_unavailable" || c.type === "room_unavailable") &&
+                        (c.day_of_week === null || c.day_of_week === day) &&
+                        (c.timeslot_start === null || slot >= c.timeslot_start) &&
+                        (c.timeslot_end === null || slot <= c.timeslot_end));
+        }
+        function isForbidden(day, slot) { return coveringConstraints(day, slot).length > 0; }
+        async function toggleForbidden(day, slot) {
+                if (!consPickEntity) { flash("Сначала добавьте учителя/класс/кабинет в справочники."); return; }
+                const covering = coveringConstraints(day, slot);
+                if (covering.length) {
+                        for (const c of covering) await DeleteConstraint(c.id);
+                        flash("Запрет снят: " + dayName(day) + " П" + (slot + 1));
+                } else {
+                        await CreateConstraint({
+                                type: consPickKind + "_unavailable", entity_type: consPickKind,
+                                entity_id: consPickEntity.id, day_of_week: day,
+                                timeslot_start: slot, timeslot_end: slot,
+                                is_hard: true, school_id: activeSchoolID,
+                        });
+                        flash("Запрещено: " + dayName(day) + " П" + (slot + 1));
+                }
+                await reloadRefs();
+        }
+        function toggleConDay(d, on) {
+                con.days = on ? [...con.days, d].sort((a, b) => a - b) : con.days.filter((x) => x !== d);
         }
 
         let days = 6, slots = 8;
+        // Учебные дни недели (чекбоксы в «Ограничениях»): бит 0 = Пн …
+        // бит 6 = Вс. 0 — до загрузки настроек (тогда активны первые days).
+        let schoolDaysMask = 0;
+        const DAY_NAMES = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"];
+        // Дни, которые рисуем в сетках/печати/PDF: включённые в маску,
+        // а без маски — первые days дней (легаси-поведение).
+        $: activeDayIdx = schoolDaysMask > 0
+                ? DAY_NAMES.map((_, d) => d).filter((d) => schoolDaysMask & (1 << d))
+                : Array.from({ length: Math.min(days, 7) }, (_, d) => d);
         let bellPeriods = [];
         let genResult = null;
         let usePrecise = false;
@@ -59,7 +116,8 @@
                 ? rooms.map((r) => ({ id: r.id, label: r.name }))
                 : classes.map((c) => ({ id: c.id, label: c.name }));
 
-        let exportMode = "school";
+        // PDF следует выбранному «Виду» на экране — что видите, то и в файле.
+        $: exportMode = viewMode;
         let pageSize = "A2";
         let orientation = "landscape";
         let compact = false;
@@ -88,13 +146,13 @@
         // `conflictIDs` internally, but the compiler cannot see inside the
         // function — so we pass them as explicit arguments to make them real
         // dependencies. Any change to the schedule now rebuilds the grid.
-        $: grid = buildGrid(schedule, visibleRows, kind, days, slots, conflictIDs);
-        function buildGrid(schedule, visibleRows, viewMode, days, slots, conflictIDs) {
+        $: grid = buildGrid(schedule, visibleRows, kind, activeDayIdx, slots, conflictIDs);
+        function buildGrid(schedule, visibleRows, viewMode, activeDayIdx, slots, conflictIDs) {
                 void schedule; void conflictIDs; // (dependencies — see comment above)
                 return visibleRows.map((row) => ({
                         id: row.id,
                         label: row.label,
-                        cells: Array.from({ length: days }, (_, di) =>
+                        cells: activeDayIdx.map((di) =>
                                 Array.from({ length: slots }, (_, si) => cellAt(viewMode, row.id, di, si)))
                 }));
         }
@@ -120,6 +178,9 @@
                         const st = raw ? JSON.parse(raw) : {};
                         if (st.days > 0) days = st.days;
                         if (st.slots > 0) slots = st.slots;
+                        schoolDaysMask = st.days_mask > 0
+                                ? st.days_mask
+                                : (1 << Math.min(days, 7)) - 1;
                         if (Array.isArray(st.periods) && st.periods.length === slots) {
                                 bellPeriods = st.periods;
                         } else {
@@ -132,10 +193,23 @@
         async function saveSettings() {
                 const periods = [];
                 for (let i = 0; i < slots; i++) periods.push(bellPeriods[i] || { start: "", end: "" });
-                const st = { days, slots, periods };
+                const st = { days, slots, days_mask: schoolDaysMask, periods };
                 await UpdateSchoolSettings(activeSchoolID, JSON.stringify(st));
                 bellPeriods = periods;
                 flash("Настройки сохранены");
+        }
+        // Переключение учебного дня (чекбокс в «Ограничениях»): последний
+        // включённый день снять нельзя — расписание без дней не строится.
+        // Меняется сразу везде: сетка, генерация, печать и PDF.
+        function toggleSchoolDay(d, on) {
+                const next = on ? (schoolDaysMask | (1 << d)) : (schoolDaysMask & ~(1 << d));
+                if (next === 0) { flash("Хотя бы один учебный день должен быть включён"); return; }
+                schoolDaysMask = next;
+                if (activeSchoolID) {
+                        const periods = [];
+                        for (let i = 0; i < slots; i++) periods.push(bellPeriods[i] || { start: "", end: "" });
+                        UpdateSchoolSettings(activeSchoolID, JSON.stringify({ days, slots, days_mask: schoolDaysMask, periods })).catch(() => {});
+                }
         }
         function onSlotsChange() {
                 const cur = bellPeriods.slice();
@@ -154,35 +228,65 @@
         async function reloadSchedule() {
                 if (!activeSchoolID) return;
                 schedule = (await ListSchedule(activeSchoolID)) || [];
-                recomputeConflicts();
+                // conflictIDs пересчитывается реактивно из schedule+constraints
         }
 
         let conflictIDs = new Set();
-        function recomputeConflicts() {
+        // Красным помечаем и двойные брони, и уроки, вставшие на запрещённую
+        // ячейку жёсткого ограничения «недоступен» (учитель/класс/кабинет).
+        $: conflictIDs = computeConflictIDs(schedule, constraints);
+        function violatesUnavailable(c, e) {
+                if (c.entity_type === "teacher" ? e.teacher_id !== c.entity_id
+                        : c.entity_type === "class" ? e.class_id !== c.entity_id
+                        : e.room_id !== c.entity_id) return false;
+                if (c.day_of_week != null && e.day_of_week !== c.day_of_week) return false;
+                if (c.timeslot_start != null && e.timeslot < c.timeslot_start) return false;
+                if (c.timeslot_end != null && e.timeslot > c.timeslot_end) return false;
+                return true;
+        }
+        function computeConflictIDs(schedule, constraints) {
+                const ids = new Set();
+                // Конфликт = два урока с ОДНИМ И ТЕМ ЖЕ учителем/классом/
+                // кабинетом в одно время. Группируем по (значение поля,
+                // день, слот): 9 разных классов в одном слоте — это норма,
+                // а не накладка (старый детектор красил всю школу).
                 const maps = { teacher_id: {}, class_id: {}, room_id: {} };
                 for (const e of schedule) {
                         const k = e.day_of_week * 1000 + e.timeslot;
                         for (const f of ["teacher_id", "class_id", "room_id"]) {
-                                if (!maps[f][k]) maps[f][k] = [];
-                                maps[f][k].push(e.id);
+                                const v = e[f];
+                                if (!v) continue; // пустой кабинет/учитель не конфликтует
+                                if (!maps[f][v]) maps[f][v] = {};
+                                if (!maps[f][v][k]) maps[f][v][k] = [];
+                                maps[f][v][k].push(e.id);
                         }
                 }
-                const ids = new Set();
                 for (const f in maps) {
-                        for (const k in maps[f]) {
-                                if (maps[f][k].length > 1) maps[f][k].forEach((id) => ids.add(id));
+                        for (const v in maps[f]) {
+                                for (const k in maps[f][v]) {
+                                        if (maps[f][v][k].length > 1) maps[f][v][k].forEach((id) => ids.add(id));
+                                }
                         }
                 }
-                conflictIDs = ids;
+                for (const c of constraints) {
+                        if (!c.is_hard) continue;
+                        if (c.type !== "teacher_unavailable" && c.type !== "class_unavailable" && c.type !== "room_unavailable") continue;
+                        for (const e of schedule) if (violatesUnavailable(c, e)) ids.add(e.id);
+                }
+                return ids;
         }
 
         let report = { conflicts: [], unplaced: [], overloads: [] };
         function computeConflictReport() {
+                // Та же группировка, что и в computeConflictIDs: по значению
+                // поля (учитель/класс/кабинет) + время.
                 const byKey = { teacher_id: {}, class_id: {}, room_id: {} };
                 for (const e of schedule) {
                         const key = e.day_of_week * 1000 + e.timeslot;
                         for (const f of ["teacher_id", "class_id", "room_id"]) {
-                                (byKey[f][key] = byKey[f][key] || []).push(e);
+                                const v = e[f];
+                                if (!v) continue;
+                                (byKey[f][v + ":" + key] = byKey[f][v + ":" + key] || []).push(e);
                         }
                 }
                 const labels = { teacher_id: "Учитель", class_id: "Класс", room_id: "Кабинет" };
@@ -191,7 +295,9 @@
                         for (const key in byKey[f]) {
                                 const arr = byKey[f][key];
                                 if (arr.length > 1) {
-                                        const day = Math.floor(key / 1000), slot = key % 1000;
+                                        // key = "значение:день*1000+слот"
+                                        const kk = Number(key.split(":")[1]);
+                                        const day = Math.floor(kk / 1000), slot = kk % 1000;
                                         conflicts.push({
                                                 type: labels[f], day, slot,
                                                 items: arr.map((e) => ({
@@ -212,11 +318,21 @@
                 for (const e of schedule) teacherHours[e.teacher_id] = (teacherHours[e.teacher_id] || 0) + 1;
                 const overloads = teachers.filter((t) => t.max_hours_per_week && (teacherHours[t.id] || 0) > t.max_hours_per_week)
                         .map((t) => ({ name: t.name, max: t.max_hours_per_week, got: teacherHours[t.id] || 0 }));
-                return { conflicts, unplaced, overloads };
+                const violations = [];
+                for (const c of constraints) {
+                        if (!c.is_hard) continue;
+                        if (c.type !== "teacher_unavailable" && c.type !== "class_unavailable" && c.type !== "room_unavailable") continue;
+                        for (const e of schedule) {
+                                if (violatesUnavailable(c, e)) {
+                                        violations.push({ day: e.day_of_week, slot: e.timeslot, what: constraintTypeLabel(c.type) + " · " + constraintEntityLabel(c) });
+                                }
+                        }
+                }
+                return { conflicts, unplaced, overloads, violations };
         }
         // Same syntactic-dependency rule as buildGrid above: pass the state
         // this report is derived from as explicit arguments.
-        $: report = computeConflictReport(schedule, lessons, subjects, teachers, classes, rooms);
+        $: report = computeConflictReport(schedule, lessons, subjects, teachers, classes, rooms, constraints);
 
         let history = [];
         async function pushHistory() {
@@ -248,13 +364,13 @@
         async function addClass() {
                 if (!c.name.trim()) { flash("Введите название класса"); return; }
                 await CreateClass({ ...c, school_id: activeSchoolID });
-                c = { name: "", grade: 0, student_count: 0, subgroup_of: null };
+                c = { name: "", grade: 0, room_id: 0, subgroup_of: null };
                 await reloadRefs();
         }
         async function addRoom() {
                 if (!r.name.trim()) { flash("Введите название кабинета"); return; }
                 await CreateRoom({ ...r, school_id: activeSchoolID });
-                r = { name: "", capacity: 30, room_type: "any" };
+                r = { name: "", room_type: "any" };
                 await reloadRefs();
         }
         async function addLesson() {
@@ -274,15 +390,6 @@
                 try {
                         await UpdateLesson({ id: x.id, school_id: x.school_id, class_id: x.class_id, subject_id: x.subject_id, teacher_id: x.teacher_id, hours_per_week: x.hours_per_week || 1, min_gap_days: x.min_gap_days || 1, can_split: x.can_split, preferred_rooms: x.preferred_rooms || "[]" });
                 } catch (e) { flash("Ошибка обновления урока: " + (e && e.message ? e.message : e)); }
-        }
-        async function addConstraint() {
-                const payload = { ...con, school_id: activeSchoolID };
-                if (payload.entity_type === "school") payload.entity_id = activeSchoolID;
-                if (payload.day_of_week === null || payload.day_of_week === "") delete payload.day_of_week;
-                if (payload.timeslot_start === null || payload.timeslot_start === "") delete payload.timeslot_start;
-                if (payload.timeslot_end === null || payload.timeslot_end === "") delete payload.timeslot_end;
-                await CreateConstraint(payload);
-                await reloadRefs();
         }
         async function removeLesson(id) { if (!await confirmAction("Удалить урок?")) return; await pushHistory(); await DeleteLesson(id); await reloadRefs(); flash("Урок удалён"); }
         async function confirmAction(message) {
@@ -308,7 +415,7 @@
                         }
                 }
                 try {
-                        genResult = (usePrecise ? await GeneratePrecise(activeSchoolID, days, slots) : await Generate(activeSchoolID, days, slots)) || {};
+                        genResult = (usePrecise ? await GeneratePrecise(activeSchoolID, days, slots, schoolDaysMask) : await Generate(activeSchoolID, days, slots, schoolDaysMask)) || {};
                         await reloadSchedule();
                         flash(`Размещено ${genResult.placed}/${genResult.total}, нарушений (мягких): ${genResult.violations}`);
                 } catch (e) {
@@ -319,7 +426,7 @@
                 await pushHistory();
                 if (!lessons.length) { flash("Нет уроков в учебном плане — добавьте их на вкладке «Уроки»."); history.pop(); return; }
                 try {
-                        genResult = await GeneratePrecise(activeSchoolID, days, slots);
+                        genResult = await GeneratePrecise(activeSchoolID, days, slots, schoolDaysMask);
                         await reloadSchedule();
                         flash(`CP-SAT: размещено ${genResult.placed}/${genResult.total}`);
                 } catch (e) {
@@ -380,13 +487,13 @@
                                 : en.id === target.id
                                 ? { ...en, day_of_week: src.day_of_week, timeslot: src.timeslot }
                                 : en);
-                        recomputeConflicts();
+                        // conflictIDs пересчитывается реактивно из schedule+constraints
                         flash(`✓ Поменяли местами: ${cellLabelShort(src)} (${dayName(src.day_of_week)} П${src.timeslot + 1}) ⟷ ${cellLabelShort(target)} (${dayName(day)} П${slot + 1})`);
                 } else {
                         schedule = schedule.map((en) => en.id === id
                                 ? { ...en, day_of_week: day, timeslot: slot }
                                 : en);
-                        recomputeConflicts();
+                        // conflictIDs пересчитывается реактивно из schedule+constraints
                         flash(`✓ Перемещено: ${cellLabelShort(src)} → ${dayName(day)} П${slot + 1}`);
                 }
 
@@ -404,7 +511,7 @@
                         // another edit). Do NOT silently overwrite — the user
                         // must see their move was rolled back.
                         schedule = snapshot;
-                        recomputeConflicts();
+                        // conflictIDs пересчитывается реактивно из schedule+constraints
                         flash(`⚠ Не удалось переместить: ${err && err.message ? err.message : err}`);
                         return;
                 }
@@ -416,7 +523,7 @@
                 //    the old template did.
                 try {
                         schedule = (await ListSchedule(activeSchoolID)) || [];
-                        recomputeConflicts();
+                        // conflictIDs пересчитывается реактивно из schedule+constraints
                 } catch (e) { /* keep the optimistic state on refresh failure */ }
         }
         // ------------------------------------------------------------------
@@ -684,6 +791,7 @@
                                 bw: pdfBW,
                                 days: days,
                                 slots: slots,
+                                days_mask: schoolDaysMask,
                         };
                         const b64 = await ExportPDF(activeSchoolID, JSON.stringify(options));
                         if (!b64) throw new Error("PDF не содержит данных");
@@ -697,8 +805,10 @@
                         flash("Ошибка генерации PDF: " + (e && e.message ? e.message : e));
                 }
         }
+        // Насыщенные цвета чипов — тот же список, что в app.go для PDF.
+        // Белый текст читается на любом из этих цветов.
         function subjectColor(sid) {
-                const palette = ["#dbeafe","#dcfce7","#fef9c3","#fae8ff","#ffedd5","#cffafe","#fecaca","#e0e7ff","#d1fae5","#fee2e2","#fef3c7","#ede9fe","#ccfbf1","#fce7f3"];
+                const palette = ["#3b82f6","#10b981","#f59e0b","#8b5cf6","#ec4899","#06b6d4","#6366f1","#14b8a6","#f97316","#a855f7","#0ea5e9","#ca8a04","#65a30d","#db2777"];
                 return palette[Math.abs((sid || 0)) % palette.length];
         }
         function pdfSchoolName() {
@@ -708,108 +818,6 @@
                 return String(s).replace(/[\\/:*?"<>|]/g, "_").replace(/\s+/g, "_");
         }
 
-        // ------------------------------------------------------------------
-        // Печать по режимам.
-        //
-        // Печать "замораживает" текущие настройки экспорта: тот же режим
-        // (exportMode — плакат / по классам / по учителям / по кабинетам),
-        // тот же формат бумаги и ориентация, те же флаги (учителя, кабинеты,
-        // будни, ч/б). При открытии модала строится чистый печатный DOM
-        // (.print-root), обычный интерфейс скрывается через @media print,
-        // а @page задаёт размер и ориентацию страницы. window.print()
-        // открывает системный диалог печати (WebView2 / Chromium).
-        // ------------------------------------------------------------------
-        let printOpen = false;
-        let printHTML = "";
-        $: printCSSValue = `
-                @page { size: ${pageSize} ${orientation}; margin: 8mm; }
-                .print-root { display: none; }
-                @media print {
-                        .app { display: none !important; }
-                        .modal-backdrop { display: none !important; }
-                        .print-root { display: block !important; }
-                }
-        `;
-        // The print CSS (@page size / orientation, print visibility) is dynamic,
-        // so it cannot live in the component style block. We maintain a
-        // dedicated style element in document.head instead — a literal style
-        // tag inside the markup would be hijacked by the Svelte preprocessor.
-        let printStyleEl = null;
-        function syncPrintCSS(css) {
-                if (!css) {
-                        if (printStyleEl) { printStyleEl.remove(); printStyleEl = null; }
-                        return;
-                }
-                if (!printStyleEl) {
-                        printStyleEl = document.createElement("style");
-                        printStyleEl.setAttribute("data-print-css", "");
-                        document.head.appendChild(printStyleEl);
-                }
-                printStyleEl.textContent = css;
-        }
-        $: syncPrintCSS(printOpen ? printCSSValue : "");
-        function printEsc(s) {
-                return String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-        }
-        function printModeTitle(m) {
-                return { school: "плакат (вся школа)", class: "по классам", teacher: "по учителям", room: "по кабинетам" }[m] || m;
-        }
-        function printCellHTML(cell) {
-                if (!cell) return "<td class='pc'></td>";
-                const subject = printEsc(subjName(subjects, cell.subject_id));
-                const teacher = pdfShowTeacher ? " <span class='t'>" + printEsc(teachName(teachers, cell.teacher_id)) + "</span>" : "";
-                const room = pdfShowRoom && cell.room_id ? " <span class='r'>" + printEsc(rooms.find((r) => r.id === cell.room_id)?.name || "") + "</span>" : "";
-                const cls = cell.conflict ? " conflict" : "";
-                const bg = (!pdfBW && !cell.conflict) ? " style='background:" + subjectColor(cell.subject_id) + "'" : "";
-                return "<td class='pf" + cls + "'" + bg + "><b>" + subject + "</b>" + teacher + room + "</td>";
-        }
-        function buildPrintHTML() {
-                const dayCount = pdfWeekdaysOnly ? Math.min(days, 5) : days;
-                const modeRows = exportMode === "teacher"
-                        ? teachers.map((t) => ({ id: t.id, label: t.name }))
-                        : exportMode === "room"
-                        ? rooms.map((r) => ({ id: r.id, label: r.name }))
-                        : classes.map((c) => ({ id: c.id, label: c.name }));
-                const modeTitle = printModeTitle(exportMode);
-                const header = "<div class='ph'><div class='pt'>" + printEsc(pdfSchoolName()) + " · " + printEsc(modeTitle) + "</div><div class='pd'>Напечатано: " + new Date().toLocaleDateString("ru-RU") + "</div></div>";
-                const thead = "<thead><tr><th class='pl'>День</th>" + Array.from({ length: slots }, (_, si) => {
-                        const pl = periodLabel(si);
-                        return "<th>П" + (si + 1) + (pl ? "<span class='tm'>" + printEsc(pl) + "</span>" : "") + "</th>";
-                }).join("") + "</tr></thead>";
-
-                if (exportMode === "school") {
-                        // Плакат: одна страница, все классы — строки «класс · день» × слоты.
-                        const body = modeRows.map((row) => Array.from({ length: dayCount }, (_, di) => {
-                                const cells = Array.from({ length: slots }, (_, si) => printCellHTML(cellAt(exportMode === "school" ? "class" : exportMode, row.id, di, si))).join("");
-                                return "<tr><td class='rl'>" + printEsc(row.label) + "<span class='rd'>" + dayName(di) + "</span></td>" + cells + "</tr>";
-                        }).join("")).join("");
-                        return "<div class='sheet poster'>" + header + "<table class='ptab'>" + thead + "<tbody>" + body + "</tbody></table></div>";
-                }
-                // По классам / учителям / кабинетам: одна страница на строку.
-                return modeRows.map((row) => {
-                        const body = Array.from({ length: dayCount }, (_, di) => {
-                                const cells = Array.from({ length: slots }, (_, si) => printCellHTML(cellAt(exportMode, row.id, di, si))).join("");
-                                return "<tr><td class='dl'>" + dayName(di) + "</td>" + cells + "</tr>";
-                        }).join("");
-                        return "<div class='sheet one'><div class='rh'>" + printEsc(row.label) + "</div>" + header + "<table class='ptab'>" + thead + "<tbody>" + body + "</tbody></table></div>";
-                }).join("");
-        }
-        function openPrint() {
-                if (!schedule.length) { flash("Расписание пусто — печатать нечего."); return; }
-                printHTML = buildPrintHTML();
-                printOpen = true;
-        }
-        function closePrint() { printOpen = false; }
-        function doPrint() {
-                // window.print() is synchronous in Chromium/WebView2: the dialog
-                // blocks until the user confirms or cancels, so the print-root
-                // is guaranteed to be in the DOM for the whole print job.
-                try {
-                        window.print();
-                } catch (e) {
-                        flash("Печать недоступна в этой среде — используйте «⬇ PDF».");
-                }
-        }
         let saveModal = null; // { filename, content, mime, isBase64 }
         async function saveFile(filename, content, mime, isBase64) {
                 saveModal = { filename, content, mime, isBase64 };
@@ -845,66 +853,6 @@
                 } finally {
                         e.target.value = "";
                 }
-        }
-
-        async function seedDemo() {
-                if (!activeSchoolID) { await createSchool(); }
-                const sid = activeSchoolID;
-                const T = await CreateTeacher({ school_id: sid, name: "Иванов", short_name: "Ив", max_hours_per_week: 30 });
-                const T2 = await CreateTeacher({ school_id: sid, name: "Петрова", short_name: "Пт", max_hours_per_week: 30 });
-                const S1 = await CreateSubject({ school_id: sid, name: "Математика", short_name: "М", requires_room_type: "any" });
-                const S2 = await CreateSubject({ school_id: sid, name: "Физика", short_name: "Ф", requires_room_type: "any" });
-                const C1 = await CreateClass({ school_id: sid, name: "10А", grade: 10, student_count: 25 });
-                const C2 = await CreateClass({ school_id: sid, name: "11Б", grade: 11, student_count: 22 });
-                const R1 = await CreateRoom({ school_id: sid, name: "301", capacity: 30, room_type: "any" });
-                const R2 = await CreateRoom({ school_id: sid, name: "302", capacity: 30, room_type: "any" });
-                await CreateLesson({ school_id: sid, class_id: C1.id, subject_id: S1.id, teacher_id: T.id, hours_per_week: 5, min_gap_days: 1, can_split: false, preferred_rooms: "[]" });
-                await CreateLesson({ school_id: sid, class_id: C1.id, subject_id: S2.id, teacher_id: T2.id, hours_per_week: 3, min_gap_days: 1, can_split: false, preferred_rooms: "[]" });
-                await CreateLesson({ school_id: sid, class_id: C2.id, subject_id: S1.id, teacher_id: T.id, hours_per_week: 4, min_gap_days: 1, can_split: false, preferred_rooms: "[]" });
-                await CreateLesson({ school_id: sid, class_id: C2.id, subject_id: S2.id, teacher_id: T2.id, hours_per_week: 3, min_gap_days: 1, can_split: false, preferred_rooms: "[]" });
-                await reloadRefs();
-                flash("Демо-данные загружены: 2 учителя, 2 предмета, 2 класса, 2 кабинета, 4 урока");
-        }
-
-        async function seedDemoLarge() {
-                if (!activeSchoolID) { await createSchool(); }
-                const sid = activeSchoolID;
-                const subs = ["Математика","Русский язык","Литература","Английский язык","История","Обществознание","Биология","География","Физика","Химия","Информатика","Физкультура","ИЗО","Технология","Музыка"];
-                const subjIDs = {};
-                for (const nm of subs) {
-                        const s = await CreateSubject({ school_id: sid, name: nm, short_name: nm.slice(0, 4), requires_room_type: "any" });
-                        subjIDs[nm] = s.id;
-                }
-                const surnames = ["Иванов","Петров","Сидоров","Смирнов","Кузнецов","Попов","Соколов","Лебедев","Козлов","Новиков","Морозов","Волков","Васильев","Зайцев","Павлов","Семёнов","Голубев","Виноградов","Богданов","Воробьёв","Фёдоров","Михайлов","Беляев","Тарасов","Орлов","Комаров","Киселёв","Барсуков","Макаров","Никитин","Захаров","Сорокин","Егоров","Титов","Осипов","Киреев","Громов","Снегирёв","Веселов","Яковлев"];
-                const initials = ["А.А.","Б.Б.","В.В.","Г.Г.","Д.Д.","Е.Е.","И.И.","К.К.","Л.Л.","М.М.","Н.Н.","О.О.","П.П.","Р.Р.","С.С.","Т.Т."];
-                const teachIDs = [];
-                for (let i = 0; i < surnames.length; i++) {
-                        const t = await CreateTeacher({ school_id: sid, name: surnames[i] + " " + initials[i % initials.length], short_name: surnames[i].slice(0, 3), max_hours_per_week: 40 });
-                        teachIDs.push(t.id);
-                }
-                const letters = ["А", "Б", "В", "Г", "Д"];
-                const classes = [];
-                let cnt = 0;
-                for (let g = 5; g <= 11 && cnt < 35; g++) {
-                        for (const L of letters) {
-                                if (cnt >= 35) break;
-                                const c = await CreateClass({ school_id: sid, name: g + L, grade: g, student_count: 25, subgroup_of: null });
-                                classes.push(c); cnt++;
-                        }
-                }
-                let ti = 0;
-                for (let ci = 0; ci < classes.length; ci++) {
-                        const c = classes[ci];
-                        const n = 6 + (c.grade % 4);  // 6–9 lessons per class based on grade
-                        for (let k = 0; k < n; k++) {
-                                const subj = subs[(c.grade * 3 + k) % subs.length];
-                                const teacher = teachIDs[ti % teachIDs.length]; ti++;
-                                const hours = 2 + ((c.grade + k) % 3);  // 2–4 hours per week
-                                await CreateLesson({ school_id: sid, class_id: c.id, subject_id: subjIDs[subj], teacher_id: teacher, hours_per_week: hours, min_gap_days: 1, can_split: false, preferred_rooms: "[]" });
-                        }
-                }
-                await reloadRefs();
-                flash("Демо (35 классов) загружено: " + classes.length + " классов");
         }
 
         function className(list, id) { const x = list.find(c => c.id === id); return x ? x.name : "?"; }
@@ -989,10 +937,6 @@
                         <button class:active={tab === "settings"} on:click={() => tab = "settings"}><span class="ico">⚙️</span>Настройки</button>
                         <button class:active={tab === "schedule"} on:click={() => tab = "schedule"}><span class="ico">🗓️</span>Расписание</button>
                 </nav>
-                <div class="side-foot">
-                        <button class="ghost" on:click={seedDemo}>⚡ Демо-данные</button>
-                        <button class="ghost" on:click={seedDemoLarge}>⚡ Демо 35 классов</button>
-                </div>
         </aside>
 
         <div class="content">
@@ -1029,7 +973,19 @@
                                                         <input type="number" bind:value={t.max_hours_per_week} title="Часов/нед" />
                                                         <button class="primary" on:click={addTeacher}>+</button>
                                                 </div>
-                                                <ul class="list">{#each teachers as x}<li>{x.name} <small>({x.short_name})</small> <span class="muted">— {x.max_hours_per_week}ч/нед</span><button class="danger sm" on:click={() => removeTeacher(x.id)}>✕</button></li>{/each}</ul>
+                                                <ul class="list">{#each teachers as x}<li>
+                                                        {#if editing && editing.kind === "teacher" && editing.id === x.id}
+                                                                <input class="edit" bind:value={x.name} placeholder="Имя" />
+                                                                <input class="edit w-s" bind:value={x.short_name} placeholder="Кратко" />
+                                                                <input class="edit w-xs" type="number" bind:value={x.max_hours_per_week} title="Часов/нед" />
+                                                                <button class="primary sm" on:click={() => saveEdit("teacher", x)} title="Сохранить">✓</button>
+                                                                <button class="sm" on:click={cancelEdit} title="Отмена">✗</button>
+                                                        {:else}
+                                                                <span class="li-text">{x.name} <small>({x.short_name})</small> <span class="muted">— {x.max_hours_per_week}ч/нед</span></span>
+                                                                <button class="ghost-ico sm" on:click={() => startEdit("teacher", x.id)} title="Редактировать">✎</button>
+                                                                <button class="danger sm" on:click={() => removeTeacher(x.id)}>✕</button>
+                                                        {/if}
+                                                </li>{/each}</ul>
                                         </section>
 
                                         <section class="card">
@@ -1046,7 +1002,19 @@
                                                         <input bind:value={s.requires_room_type} placeholder="Тип каб." />
                                                         <button class="primary" on:click={addSubject}>+</button>
                                                 </div>
-                                                <ul class="list">{#each subjects as x}<li>{x.name} <small>({x.short_name})</small><button class="danger sm" on:click={() => removeSubject(x.id)}>✕</button></li>{/each}</ul>
+                                                <ul class="list">{#each subjects as x}<li>
+                                                        {#if editing && editing.kind === "subject" && editing.id === x.id}
+                                                                <input class="edit" bind:value={x.name} placeholder="Название" />
+                                                                <input class="edit w-s" bind:value={x.short_name} placeholder="Кратко" />
+                                                                <input class="edit w-s" bind:value={x.requires_room_type} placeholder="Тип каб." />
+                                                                <button class="primary sm" on:click={() => saveEdit("subject", x)} title="Сохранить">✓</button>
+                                                                <button class="sm" on:click={cancelEdit} title="Отмена">✗</button>
+                                                        {:else}
+                                                                <span class="li-text">{x.name} <small>({x.short_name})</small></span>
+                                                                <button class="ghost-ico sm" on:click={() => startEdit("subject", x.id)} title="Редактировать">✎</button>
+                                                                <button class="danger sm" on:click={() => removeSubject(x.id)}>✕</button>
+                                                        {/if}
+                                                </li>{/each}</ul>
                                         </section>
 
                                         <section class="card">
@@ -1060,11 +1028,23 @@
                                                 <div class="row">
                                                         <input bind:value={c.name} placeholder="10А" />
                                                         <input type="number" bind:value={c.grade} placeholder="Класс" />
-                                                        <input type="number" bind:value={c.student_count} placeholder="Уч-ся" />
+                                                        <select bind:value={c.room_id} title="Домашний кабинет класса"><option value={0}>— без кабинета —</option>{#each rooms as rm}<option value={rm.id}>{rm.name}</option>{/each}</select>
                                                         <select bind:value={c.subgroup_of}><option value={null}>— целый класс —</option>{#each classes as x}<option value={x.id}>{x.name} (подгруппа)</option>{/each}</select>
                                                         <button class="primary" on:click={addClass}>+</button>
                                                 </div>
-                                                <ul class="list">{#each classes as x}<li>{x.name} <span class="muted">— {x.student_count} чел.</span>{x.subgroup_of ? " · подгруппа" : ""}<button class="danger sm" on:click={() => removeClass(x.id)}>✕</button></li>{/each}</ul>
+                                                <ul class="list">{#each classes as x}<li>
+                                                        {#if editing && editing.kind === "class" && editing.id === x.id}
+                                                                <input class="edit" bind:value={x.name} placeholder="10А" />
+                                                                <input class="edit w-xs" type="number" bind:value={x.grade} title="Номер класса" />
+                                                                <select class="edit" bind:value={x.room_id} title="Домашний кабинет"><option value={0}>— без кабинета —</option>{#each rooms as rm}<option value={rm.id}>{rm.name}</option>{/each}</select>
+                                                                <button class="primary sm" on:click={() => saveEdit("class", x)} title="Сохранить">✓</button>
+                                                                <button class="sm" on:click={cancelEdit} title="Отмена">✗</button>
+                                                        {:else}
+                                                                <span class="li-text">{x.name}{#if x.room_id}<span class="muted"> — каб. {rooms.find((rm) => rm.id === x.room_id)?.name || ""}</span>{/if}{x.subgroup_of ? " · подгруппа" : ""}</span>
+                                                                <button class="ghost-ico sm" on:click={() => startEdit("class", x.id)} title="Редактировать">✎</button>
+                                                                <button class="danger sm" on:click={() => removeClass(x.id)}>✕</button>
+                                                        {/if}
+                                                </li>{/each}</ul>
                                         </section>
 
                                         <section class="card">
@@ -1077,11 +1057,20 @@
                                                 </div>
                                                 <div class="row">
                                                         <input bind:value={r.name} placeholder="301" />
-                                                        <input type="number" bind:value={r.capacity} placeholder="Мест" />
                                                         <input bind:value={r.room_type} placeholder="Тип" />
                                                         <button class="primary" on:click={addRoom}>+</button>
                                                 </div>
-                                                <ul class="list">{#each rooms as x}<li>{x.name} <span class="muted">— {x.capacity} мест</span><button class="danger sm" on:click={() => removeRoom(x.id)}>✕</button></li>{/each}</ul>
+                                                <ul class="list">{#each rooms as x}<li>
+                                                        {#if editing && editing.kind === "room" && editing.id === x.id}
+                                                                <input class="edit" bind:value={x.name} placeholder="301" />
+                                                                <button class="primary sm" on:click={() => saveEdit("room", x)} title="Сохранить">✓</button>
+                                                                <button class="sm" on:click={cancelEdit} title="Отмена">✗</button>
+                                                        {:else}
+                                                                <span class="li-text">{x.name}</span>
+                                                                <button class="ghost-ico sm" on:click={() => startEdit("room", x.id)} title="Редактировать">✎</button>
+                                                                <button class="danger sm" on:click={() => removeRoom(x.id)}>✕</button>
+                                                        {/if}
+                                                </li>{/each}</ul>
                                         </section>
                                 </div>
                         {:else if tab === "lessons"}
@@ -1125,82 +1114,46 @@
                         {:else if tab === "constraints"}
                                 <section class="card">
                                         <div class="card-head"><h2>Ограничения</h2></div>
-                                        <div class="lesson-form constraints-form">
-                                                <label class="field">
-                                                        <span class="field-label">Тип</span>
-                                                        <select bind:value={con.type} on:change={resetConstraintFields}>
-                                                                {#each Object.entries(CONSTRAINT_LABELS) as [key, label]}
-                                                                        <option value={key}>{label}</option>
-                                                                {/each}
-                                                        </select>
-                                                </label>
-                                                <label class="field">
-                                                        <span class="field-label">К кому</span>
-                                                        <select bind:value={con.entity_type}>
-                                                                <option value="teacher">Учитель</option>
-                                                                <option value="class">Класс</option>
-                                                                <option value="room">Кабинет</option>
-                                                                <option value="school">Школа</option>
-                                                        </select>
-                                                </label>
-                                                {#if con.entity_type === "school"}
-                                                        <span class="muted">вся школа</span>
-                                                {:else}
-                                                        <label class="field">
-                                                                <span class="field-label">Кто</span>
-                                                                <select bind:value={con.entity_id}>
-                                                                        <option value={0}>— выберите —</option>
-                                                                        {#if con.entity_type === "teacher"}
-                                                                                {#each teachers as x}<option value={x.id}>{x.name}</option>{/each}
-                                                                        {:else if con.entity_type === "class"}
-                                                                                {#each classes as x}<option value={x.id}>{x.name}</option>{/each}
-                                                                        {:else if con.entity_type === "room"}
-                                                                                {#each rooms as x}<option value={x.id}>{x.name}</option>{/each}
-                                                                        {/if}
-                                                                </select>
+                                        <div class="school-days">
+                                                <span class="field-label">Учебные дни недели:</span>
+                                                {#each DAY_NAMES as dn, d}
+                                                        <label class="chk" title={activeDayIdx.includes(d) ? "Учебный день — снять галочку, чтобы убрать день из расписания" : "Выходной — включить день в расписание"}>
+                                                                <input type="checkbox"
+                                                                        checked={(schoolDaysMask & (1 << d)) !== 0}
+                                                                        on:change={(e) => toggleSchoolDay(d, e.currentTarget.checked)} /> {dn}
                                                         </label>
-                                                {/if}
-                                                {#if constraintFields(con.type).day}
-                                                        <label class="field">
-                                                                <span class="field-label">День</span>
-                                                                <select bind:value={con.day_of_week}>
-                                                                        <option value={null}>— любой день —</option>
-                                                                        {#each Array(days) as _, di}
-                                                                                <option value={di}>{dayName(di)}</option>
-                                                                        {/each}
-                                                                </select>
-                                                        </label>
-                                                {/if}
-                                                {#if constraintFields(con.type).slots}
-                                                        <label class="field">
-                                                                <span class="field-label">Слот с</span>
-                                                                <select bind:value={con.timeslot_start}>
-                                                                        <option value={null}>— любой —</option>
-                                                                        {#each Array(slots) as _, si}
-                                                                                <option value={si}>{slotLabel(si)}</option>
-                                                                        {/each}
-                                                                </select>
-                                                        </label>
-                                                        <label class="field">
-                                                                <span class="field-label">Слот по</span>
-                                                                <select bind:value={con.timeslot_end}>
-                                                                        <option value={null}>— любой —</option>
-                                                                        {#each Array(slots) as _, si}
-                                                                                <option value={si}>{slotLabel(si)}</option>
-                                                                        {/each}
-                                                                </select>
-                                                        </label>
-                                                {/if}
-                                                {#if constraintFields(con.type).value}
-                                                        <label class="field">
-                                                                <span class="field-label">{constraintFields(con.type).valueLabel}</span>
-                                                                <input type="number" min="0" max="20" bind:value={con.weight} />
-                                                        </label>
-                                                {/if}
-                                                <label class="chk"><input type="checkbox" bind:checked={con.is_hard} /> 🔒 жёсткое</label>
-                                                <button class="primary" on:click={addConstraint}>+ Добавить</button>
+                                                {/each}
                                         </div>
-                                        <p class="hint">Поля «день», «слот с/по» показываются только когда они нужны для выбранного типа. «любой день» или «любой слот» = без ограничения по этому параметру.</p>
+                                        <p class="hint">Снятые дни сразу исчезают из сетки расписания, генерации и PDF — как выходные. Последний оставшийся день снять нельзя.</p>
+
+                                        <div class="pick-bar">
+                                                <div class="pick-kind">
+                                                        <button class:active={consPickKind === "teacher"} on:click={() => setPickKind("teacher")}>Учитель</button>
+                                                        <button class:active={consPickKind === "class"} on:click={() => setPickKind("class")}>Класс</button>
+                                                        <button class:active={consPickKind === "room"} on:click={() => setPickKind("room")}>Кабинет</button>
+                                                </div>
+                                                <select value={consPickEntity ? consPickEntity.id : 0} on:change={(e) => consPickId = +e.currentTarget.value}>
+                                                        {#each consPickList as x (x.id)}<option value={x.id}>{pickName(x)}</option>{/each}
+                                                </select>
+                                                <span class="hint pick-hint">Клик по ячейке — запретить или разрешить это время.</span>
+                                        </div>
+                                        <table class="pick-grid">
+                                                <thead><tr><th class="d"></th>{#each Array(slots) as _, si}<th>{#if periodLabel(si)}{periodLabel(si)}{:else}П{si + 1}{/if}</th>{/each}</tr></thead>
+                                                <tbody>
+                                                        {#each activeDayIdx as d (d)}
+                                                                <tr>
+                                                                        <td class="day">{dayName(d)}</td>
+                                                                        {#each Array(slots) as _, si}
+                                                                                <td class="slot" class:forbidden={isForbidden(d, si)}
+                                                                                        on:click={() => toggleForbidden(d, si)}
+                                                                                        title={isForbidden(d, si) ? "Клик — разрешить" : "Клик — запретить"}>{#if isForbidden(d, si)}✕{/if}</td>
+                                                                        {/each}
+                                                                </tr>
+                                                        {/each}
+                                                </tbody>
+                                        </table>
+
+
                                         <ul class="list constraints-list">
                                                 {#each constraints as x}
                                                         <li>
@@ -1240,8 +1193,7 @@
                         {:else if tab === "schedule"}
                                 <section class="card">
                                         <div class="gen-bar">
-                                                <label>Дней: <input class="num" type="number" bind:value={days} /></label>
-                                                <label>Слотов: <input class="num" type="number" bind:value={slots} /></label>
+                                                <span class="grid-info">{days} дней · {slots} уроков в день</span>
                                                 <button class="primary" on:click={generate}>⚙ Сгенерировать</button>
                                                 <button on:click={undo}>↶ Отменить</button>
                                                 <label class="chk" class:warn={!hasPreciseSolver} title={hasPreciseSolver ? "OR-Tools CP-SAT доступен в этой сборке" : "OR-Tools CP-SAT НЕ скомпилирован в эту сборку — будет использован быстрый эвристический решатель"}><input type="checkbox" bind:checked={usePrecise} /> точный CP-SAT (OR-Tools){#if !hasPreciseSolver} <span class="badge-warn">недоступно</span>{/if}</label>
@@ -1265,14 +1217,8 @@
                                                         </span>
                                                 {/if}
                                                 <span class="sep"></span>
-                                                <label>Экспорт:
-                                                        <select bind:value={exportMode}>
-                                                                <option value="school">вся школа (плакат)</option>
-                                                                <option value="class">по классам (отд. стр.)</option>
-                                                                <option value="teacher">по учителям</option>
-                                                                <option value="room">по кабинетам</option>
-                                                        </select>
-                                                </label>
+                                                <div class="export-panel">
+                                                <span class="panel-label">ЭКСПОРТ</span>
                                                 <label>Стр.:
                                                         <select bind:value={pageSize}>
                                                                 <option value="A0">A0</option><option value="A1">A1</option><option value="A2">A2</option><option value="A3">A3</option><option value="A4">A4</option>
@@ -1288,11 +1234,11 @@
                                                 <label class="chk"><input type="checkbox" bind:checked={pdfShowRoom} /> кабинеты</label>
                                                 <label class="chk"><input type="checkbox" bind:checked={pdfWeekdaysOnly} /> будни</label>
                                                 <label class="chk"><input type="checkbox" bind:checked={pdfBW} /> ч/б</label>
-                                                <button on:click={openPrint} title="Печать по текущему режиму">🖨 Печать</button>
                                                 <button on:click={exportPDF}>⬇ PDF</button>
                                                 <button on:click={exportCSV}>⬇ CSV</button>
                                                 <button on:click={exportJSON}>⬇ JSON</button>
                                                 <label class="file">⬆ JSON<input type="file" accept="application/json" on:change={importJSON} /></label>
+                                                </div>
                                         </div>
                                         {#if genResult}<p class="status">Размещено <b>{genResult.placed}/{genResult.total}</b> · мягких нарушений: <b>{genResult.violations}</b></p>{/if}
                                         <p class="hint">Чтобы переместить урок: зажмите и перетащите ячейку в другую (drag) либо кликните урок, затем кликните целевую ячейку. Во время перетаскивания целевая ячейка подсвечивается. Повторный клик по выделенному (или Esc) снимает выделение. ✕ в ячейке — удалить.</p>
@@ -1303,16 +1249,22 @@
                                                         <div class="overview">
                                                                 {#each grid as row (row.id)}
                                                                         <div class="mini">
-                                                                                <h3 on:click={() => focusRow(row.id)} title="Открыть этот класс отдельно">{row.label}</h3>
+                                                                                <button class="mini-title" on:click={() => focusRow(row.id)} title="Открыть этот класс отдельно">{row.label}</button>
                                                                                 <table>
                                                                                         <thead><tr><th class="d"></th>{#each Array(slots) as _, si}<th>П{si + 1}</th>{/each}</tr></thead>
                                                                                         <tbody>
                                                                                                 {#each row.cells as dayCells, di}
-                                                                                                        <tr><td class="day">{dayName(di)}</td>{#each dayCells as cell}<td
+                                                                                                        <tr><td class="day">{dayName(activeDayIdx[di])}</td>{#each dayCells as cell, si}<td
                                                                                                                 class:filled={!!cell}
-                                                                                                                class:conflict={!!cell && cell.conflict}
-                                                                                                                style={cell ? 'background:' + subjectColor(cell.subject_id) : ''}
-                                                                                                                title={cell ? cell.label : ''}>{#if cell}{subjShort(subjects, cell.subject_id)}{/if}</td>{/each}</tr>
+                                                                                                                class:selected={selectedEntry && cell && selectedEntry.id === cell.id}
+                                                                                                                class:drop-target={dropTarget && dropTarget.rowId === row.id && dropTarget.day === activeDayIdx[di] && dropTarget.slot === si}
+                                                                                                                title={cell ? cell.label : ''}
+                                                                                                                data-cell
+                                                                                                                data-day={activeDayIdx[di]}
+                                                                                                                data-slot={si}
+                                                                                                                data-row={row.id}
+                                                                                                                data-kind={kind}
+                                                                                                                on:pointerdown={(e) => onPointerDown(e, cell, kind, row.id, activeDayIdx[di], si)}>{#if cell}<div class="chip" class:conflict={cell.conflict} style="background:{cell.conflict ? '#dc2626' : subjectColor(cell.subject_id)}">{subjShort(subjects, cell.subject_id)}</div>{/if}</td>{/each}</tr>
                                                                                                 {/each}
                                                                                         </tbody>
                                                                                 </table>
@@ -1325,21 +1277,20 @@
                                                                 <div class="class-block" class:compact>
                                                                         <h3>{row.label}</h3>
                                                                         <table class:compact>
-                                                                                <thead><tr><th>День</th>{#each Array(slots) as _, si}<th>П{si + 1}{periodLabel(si) ? " " + periodLabel(si) : ""}</th>{/each}</tr></thead>
+                                                                                <thead><tr><th class="day-h">День</th>{#each Array(slots) as _, si}<th>П{si + 1}{#if periodLabel(si)}<span class="tm">{periodLabel(si)}</span>{/if}</th>{/each}</tr></thead>
                                                                                 <tbody>
                                                                                         {#each row.cells as dayCells, di}
-                                                                                                <tr><td class="day">{dayName(di)}</td>{#each dayCells as cell, si}<td
+                                                                                                <tr><td class="day">{dayName(activeDayIdx[di])}</td>{#each dayCells as cell, si}<td
                                                                                                         class:filled={!!cell}
-                                                                                                        class:conflict={!!cell && cell.conflict}
-                                                                                                        style={cell ? 'background:' + subjectColor(cell.subject_id) : ''}
                                                                                                         class:selected={selectedEntry && cell && selectedEntry.id === cell.id}
-                                                                                                        class:drop-target={dropTarget && dropTarget.rowId === row.id && dropTarget.day === di && dropTarget.slot === si}
+                                                                                                        class:drop-target={dropTarget && dropTarget.rowId === row.id && dropTarget.day === activeDayIdx[di] && dropTarget.slot === si}
+                                                                                                        title={cell ? cell.label : ''}
                                                                                                         data-cell
-                                                                                                        data-day={di}
+                                                                                                        data-day={activeDayIdx[di]}
                                                                                                         data-slot={si}
                                                                                                         data-row={row.id}
                                                                                                         data-kind={kind}
-                                                                                                        on:pointerdown={(e) => onPointerDown(e, cell, kind, row.id, di, si)}>{#if cell}{cell.label}<button class="cell-x" title="Удалить" on:click={(e) => { e.stopPropagation(); removeEntry(cell.id); }}>✕</button>{:else}{/if}</td>{/each}</tr>
+                                                                                                        on:pointerdown={(e) => onPointerDown(e, cell, kind, row.id, activeDayIdx[di], si)}>{#if cell}<div class="chip" class:conflict={cell.conflict} style="background:{cell.conflict ? '#dc2626' : subjectColor(cell.subject_id)}"><b>{subjName(subjects, cell.subject_id)}</b>{#if pdfShowTeacher}<span>{teachName(teachers, cell.teacher_id)}</span>{/if}{#if pdfShowRoom && cell.room_id}<span>{rooms.find((r) => r.id === cell.room_id)?.name || ""}</span>{/if}</div><button class="cell-x" title="Удалить" on:click={(e) => { e.stopPropagation(); removeEntry(cell.id); }}>✕</button>{/if}</td>{/each}</tr>
                                                                                         {/each}
                                                                                 </tbody>
                                                                         </table>
@@ -1348,12 +1299,17 @@
                                                 </div>
                                                 {/if}
                                                 {#if ghost}<div class="drag-ghost" style="left:{ghost.x}px; top:{ghost.y}px;">{ghost.label}</div>{/if}
-                                                {#if report.conflicts.length || report.unplaced.length || report.overloads.length}
+                                                {#if report.conflicts.length || report.unplaced.length || report.overloads.length || report.violations.length}
                                                         <div class="report">
                                                                 <h3>Отчёт по конфликтам</h3>
                                                                 {#if report.conflicts.length}
                                                                         <div class="rep-sec"><b>Накладки ({report.conflicts.length}):</b>
                                                                                 <ul>{#each report.conflicts as c}<li>{dayName(c.day)} П{c.slot + 1}: {c.type} — {#each c.items as it, i}{it.subject} ({it.who}){#if i < c.items.length - 1}, {/if}{/each}</li>{/each}</ul>
+                                                                        </div>
+                                                                {/if}
+                                                                {#if report.violations.length}
+                                                                        <div class="rep-sec"><b>Нарушено жёсткое ограничение ({report.violations.length}):</b>
+                                                                                <ul>{#each report.violations as v}<li>{dayName(v.day)} П{v.slot + 1}: {v.what} — урок стоит в запрещённой ячейке</li>{/each}</ul>
                                                                         </div>
                                                                 {/if}
                                                                 {#if report.unplaced.length}
@@ -1387,32 +1343,7 @@
                         </div>
                 {/if}
 
-                {#if printOpen}
-                        <div class="print-root">{@html printHTML}</div>
-                        <div class="modal-backdrop" role="button" tabindex="-1" on:click={closePrint} on:keydown={(e) => { if (e.key === 'Escape') closePrint(); }}>
-                                <div class="modal print-modal" role="dialog" tabindex="0" on:click|stopPropagation on:keydown|stopPropagation>
-                                        <h3>🖨 Печать расписания</h3>
-                                        <p class="muted">Будет напечатано ровно то, что выбрано в настройках экспорта:</p>
-                                        <ul class="print-summary">
-                                                <li>Режим: <b>{printModeTitle(exportMode)}</b></li>
-                                                <li>Бумага: <b>{pageSize}</b>, <b>{orientation === "landscape" ? "альбомная" : "книжная"}</b></li>
-                                                <li>{pdfShowTeacher ? "с учителями" : "без учителей"} · {pdfShowRoom ? "с кабинетами" : "без кабинетов"} · {pdfWeekdaysOnly ? "только будни" : "вся неделя"} · {pdfBW ? "ч/б" : "цвет"}</li>
-                                        </ul>
-                                        <p class="muted print-pages">
-                                                {#if exportMode === "school"}
-                                                        1 страница-плакат (все классы).
-                                                {:else}
-                                                        {exportMode === "teacher" ? teachers.length : exportMode === "room" ? rooms.length : classes.length} страниц — по одной на каждую {exportMode === "teacher" ? "учителя" : exportMode === "room" ? "кабинет" : "строку"}.
-                                                {/if}
-                                        </p>
-                                        <div class="modal-actions">
-                                                <button on:click={closePrint}>Отмена</button>
-                                                <button on:click={exportPDF} title="Если принтера нет — сохраните PDF">⬇ PDF вместо печати</button>
-                                                <button class="primary" on:click={doPrint}>Печатать…</button>
-                                        </div>
-                                </div>
-                        </div>
-                {/if}
+
         </div>
 </div>
 
@@ -1450,12 +1381,6 @@
         .nav button:hover { background: #f1f5f9; color: #0f172a; }
         .nav button.active { background: #eef2ff; color: #4f46e5; font-weight: 600; }
         .nav .ico { font-size: 16px; width: 20px; text-align: center; }
-        .side-foot { margin-top: auto; display: flex; flex-direction: column; gap: 8px; padding-top: 16px; }
-        .side-foot .ghost {
-                background: #f8fafc; border: 1px dashed #cbd5e1; color: #475569;
-                border-radius: 10px; padding: 8px 10px; cursor: pointer; font-size: 13px;
-        }
-        .side-foot .ghost:hover { border-color: #4f46e5; color: #4f46e5; }
 
         .content { flex: 1; display: flex; flex-direction: column; min-width: 0; }
         .topbar {
@@ -1486,14 +1411,39 @@
         button.mini { padding: 4px 8px; font-size: 12px; background: #f1f5f9; }
         button.mini:hover { background: #e2e8f0; }
         .chk { display: inline-flex; align-items: center; gap: 5px; font-size: 13px; color: #475569; }
-        .constraints-form { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end; }
-        .field { display: flex; flex-direction: column; gap: 2px; }
+        .export-panel { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 6px 10px; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 10px; }
+        .export-panel .panel-label { font-size: 10px; font-weight: 700; letter-spacing: 0.5px; color: #64748b; text-transform: uppercase; margin-right: 2px; }
+        .grid-info { font-size: 13px; font-weight: 600; color: #475569; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 5px 10px; }
+        .list li { flex-wrap: nowrap; }
+        .list .li-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .list input.edit { flex: 1; min-width: 0; padding: 3px 6px; font-size: 12px; }
+        .list input.edit.w-s { flex: 0 0 64px; }
+        .list input.edit.w-xs { flex: 0 0 56px; }
+        .ghost-ico { background: transparent; border: none; color: #64748b; cursor: pointer; font-size: 12px; padding: 2px 4px; }
+        .ghost-ico:hover { color: #4f46e5; }
         .field-label { font-size: 11px; color: #64748b; font-weight: 500; text-transform: uppercase; letter-spacing: 0.5px; }
+        /* Визуальный редактор запретов: клик по ячейке сетки. */
+        .pick-bar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
+        .pick-kind { display: flex; border: 1px solid #e2e8f0; border-radius: 8px; overflow: hidden; }
+        .pick-kind button { border: none; background: #f8fafc; padding: 6px 14px; cursor: pointer; font-size: 13px; color: #475569; }
+        .pick-kind button.active { background: #4f46e5; color: #fff; }
+        .pick-hint { margin: 0; }
+        .pick-grid { border-collapse: collapse; width: 100%; max-width: 760px; table-layout: fixed; margin-bottom: 14px; }
+        .pick-grid th { font-size: 10.5px; color: #475569; font-weight: 600; padding: 2px 1px; }
+        .pick-grid th.d { width: 42px; }
+        .pick-grid td.day { background: #f1f5f9; font-weight: 700; color: #475569; font-size: 11.5px; text-align: center; padding: 2px; border: 1px solid #e2e8f0; }
+        .pick-grid td.slot { height: 30px; border: 1px solid #e2e8f0; text-align: center; cursor: pointer; color: #fff; font-size: 11px; font-weight: 700; background: #fff; user-select: none; }
+        .pick-grid td.slot:hover { background: #dbeafe; }
+        .pick-grid td.slot.forbidden { background: #dc2626; }
+        .pick-grid td.slot.forbidden:hover { background: #b91c1c; }
         .constraints-list li { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
         .con-summary { flex: 1; line-height: 1.4; }
         .chk.warn { color: #b45309; }
         .badge-warn { display: inline-block; background: #fde68a; color: #92400e; padding: 1px 6px; border-radius: 6px; font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
         .chk input { width: auto; }
+        .school-days { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; padding: 8px 12px; margin-bottom: 12px; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; }
+        .school-days .chk { font-weight: 600; }
+        /* aSc-style multi-select panes: chips in a wrapping, scrollable strip */
         .row { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; align-items: center; }
 
         .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 18px; }
@@ -1513,7 +1463,7 @@
         .list { list-style: none; padding: 0; margin: 0; max-height: 220px; overflow: auto; }
         .list li { padding: 6px 8px; border-bottom: 1px solid #f1f5f9; font-size: 13px; }
         .list li:last-child { border-bottom: none; }
-        .muted { color: #94a3b8; }
+        .muted { color: #64748b; }
 
         table.data { border-collapse: collapse; width: 100%; margin-top: 8px; }
         table.data th, table.data td { border-bottom: 1px solid #e2e8f0; padding: 8px 10px; text-align: left; font-size: 13px; }
@@ -1523,29 +1473,11 @@
 
         .gen-bar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
         .gen-bar .sep { flex-basis: 100%; height: 0; }
-        .gen-bar .num { width: 56px; }
         .pager { display: inline-flex; align-items: center; gap: 6px; }
         .status { background: #ecfdf5; border: 1px solid #a7f3d0; color: #065f46; padding: 8px 12px; border-radius: 10px; font-size: 13px; }
-        .hint { color: #94a3b8; font-size: 12px; margin: 6px 0 14px; }
+        .hint { color: #64748b; font-size: 12px; margin: 6px 0 14px; }
         .empty { color: #94a3b8; padding: 24px; text-align: center; background: #f8fafc; border-radius: 10px; }
         .grid-scroll { overflow-x: auto; }
-        .class-block { margin-bottom: 22px; min-width: 520px; }
-        .class-block h3 { margin: 0 0 8px; font-size: 14px; color: #0f172a; }
-        .class-block table { border-collapse: collapse; width: 100%; }
-        .class-block th, .class-block td { border: 1px solid #e2e8f0; padding: 6px 8px; text-align: center; font-size: 12px; height: 38px; user-select: none; -webkit-user-select: none; touch-action: none; }
-        .class-block th { background: #f8fafc; color: #64748b; font-weight: 600; }
-        .class-block td.day { background: #f1f5f9; font-weight: 600; white-space: nowrap; }
-        td.filled { cursor: grab; border-radius: 4px; font-weight: 500; }
-        td.filled:active { cursor: grabbing; }
-        td.filled.conflict { background: #b91c1c !important; color: #fff; }
-        td.drop-target { outline: 3px dashed #1d4ed8; outline-offset: -3px; background: #dbeafe !important; }
-        td.drop-target.conflict { background: #b91c1c !important; }
-        .cell-x { position: absolute; top: 1px; right: 1px; border: none; background: rgba(0,0,0,0.18); color: #fff; width: 16px; height: 16px; line-height: 14px; border-radius: 4px; cursor: pointer; font-size: 10px; padding: 0; }
-        td.filled { position: relative; }
-        td.filled.selected { outline: 3px solid #1d4ed8; outline-offset: -2px; }
-        .drag-ghost { position: fixed; z-index: 9999; pointer-events: none; transform: translate(-50%, -50%); background: #1d4ed8; color: #fff; padding: 2px 8px; border-radius: 6px; font-size: 12px; max-width: 200px; box-shadow: 0 4px 14px rgba(0,0,0,0.3); }
-        .class-block table.compact th, .class-block table.compact td { padding: 1px 3px; font-size: 9px; height: 22px; }
-        .class-block.compact h3 { font-size: 11px; margin: 0 0 4px; }
 
         .toast { background: #16a34a; color: #fff; padding: 8px 14px; border-radius: 10px; font-size: 13px; margin-left: auto; }
         .ver { margin-left: auto; font-size: 12px; color: #94a3b8; font-family: ui-monospace, monospace; }
@@ -1560,52 +1492,78 @@
         .rep-sec ul { margin: 4px 0 0; padding-left: 18px; }
         .rep-sec li { margin: 2px 0; }
 
-        /* ---- Печать по режимам ---- */
-        .print-summary { margin: 8px 0; padding-left: 18px; font-size: 13px; color: #334155; }
-        .print-summary li { margin: 3px 0; }
-        .print-pages { font-size: 12px; }
-        /* Печатный DOM невидим на экране и виден только при печати. */
-        .print-root { display: none; }
-        /* These rules target the print DOM injected via {@html}; :global is
-           required because injected nodes carry no Svelte scope class. */
-        .print-root :global(.sheet) { font-family: "Segoe UI", Arial, sans-serif; }
-        .print-root :global(.sheet.one) { page-break-after: always; }
-        .print-root :global(.sheet:last-child) { page-break-after: auto; }
-        .print-root :global(.rh) { font-size: 14pt; font-weight: 700; margin: 0 0 2mm; }
-        .print-root :global(.ph) { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 3mm; }
-        .print-root :global(.pt) { font-size: 12pt; font-weight: 700; }
-        .print-root :global(.pd) { font-size: 8pt; color: #555; }
-        .print-root :global(table.ptab) { width: 100%; border-collapse: collapse; table-layout: fixed; }
-        .print-root :global(.ptab th), .print-root :global(.ptab td) { border: 0.3mm solid #999; padding: 1mm; font-size: 8.5pt; text-align: left; vertical-align: top; word-break: break-word; }
-        .print-root :global(.ptab th) { background: #eef; font-weight: 700; text-align: center; }
-        .print-root :global(.ptab th .tm) { display: block; font-weight: 400; font-size: 7pt; }
-        .print-root :global(.pf b) { font-weight: 600; }
-        .print-root :global(.pf .t) { color: #333; }
-        .print-root :global(.pf .r) { color: #555; }
-        .print-root :global(.pf.conflict) { background: #b91c1c !important; color: #fff; }
-        .print-root :global(.pf.conflict .t), .print-root :global(.pf.conflict .r) { color: #fee; }
-        .print-root :global(td.pl), .print-root :global(td.rl), .print-root :global(td.dl) { background: #f3f4f6; font-weight: 700; text-align: center; vertical-align: middle; }
-        .print-root :global(td.pl), .print-root :global(td.dl) { width: 14mm; }
-        .print-root :global(td.rl) { width: 24mm; font-size: 8pt; }
-        .print-root :global(td.rl .rd) { display: block; font-weight: 400; color: #555; }
-        .print-root :global(.sheet.poster) { font-size: 8pt; }
-        .print-root :global(.sheet.poster .ptab td) { padding: 0.6mm; font-size: 7.5pt; }
-        @media print {
-                /* Печатаем ровно фоны/цвета как на экране. */
-                .print-root :global(.pf), .print-root :global(.ptab th) { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-        }
-
         /* Обзор «вся школа»: все классы мини-таблицами на одном экране
            (как лист «Timetable for all classes» в aSc Timetables). */
-        .overview { display: grid; grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); gap: 12px; align-items: start; }
-        .mini { border: 1px solid #e2e8f0; border-radius: 8px; padding: 8px; background: #fff; min-width: 0; }
-        .mini h3 { margin: 0 0 6px; font-size: 13px; color: #1d4ed8; cursor: pointer; }
-        .mini h3:hover { text-decoration: underline; }
-        .mini table { border-collapse: collapse; width: 100%; table-layout: fixed; }
-        .mini th, .mini td { border: 1px solid #e2e8f0; font-size: 10px; padding: 2px 3px; height: 24px; text-align: center; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; user-select: none; }
-        .mini th { background: #f8fafc; color: #64748b; font-weight: 600; }
-        .mini th.d, .mini td.day { width: 26px; }
-        .mini td.day { background: #f1f5f9; font-weight: 600; }
-        .mini td.filled { font-weight: 600; color: #0f172a; cursor: pointer; }
-        .mini td.conflict { background: #b91c1c !important; color: #fff; }
+        /* ================= Полный редизайн сетки расписания =================
+           Современный стиль «чипов» (как aSc Timetables online): белые
+           карточки-таблицы, между ячейками зазор (border-spacing), урок —
+           цветной чип со скруглением и белым текстом, светлые фоны. */
+
+        .grid-scroll { overflow-x: auto; }
+        .class-block { margin-bottom: 24px; min-width: 560px; }
+        .class-block h3 { margin: 0 0 8px; font-size: 15px; font-weight: 800; color: #0f172a; letter-spacing: 0.2px; }
+        .class-block table, .mini table { border-collapse: separate; border-spacing: 3px; width: 100%; table-layout: fixed; }
+
+        /* Шапка: номер урока + время звонка, без рамок — как панель. */
+        .class-block th, .mini th {
+                background: transparent; color: #94a3b8; font-weight: 700;
+                font-size: 10px; padding: 2px 1px; text-align: center;
+                text-transform: uppercase; letter-spacing: 0.4px;
+                user-select: none; -webkit-user-select: none;
+        }
+        .class-block th .tm { display: block; font-weight: 500; font-size: 8.5px; color: #b6c2d2; text-transform: none; letter-spacing: 0; }
+
+        /* Колонка дней: светлая «пилюля» с днём недели. */
+        .class-block td.day, .mini td.day {
+                background: #f1f5f9; border-radius: 8px; font-weight: 700;
+                color: #475569; font-size: 11px; white-space: nowrap;
+                text-align: center; padding: 2px; user-select: none;
+        }
+
+        /* Ячейка-слот: светлый фон-«лунка», без рамок. */
+        .class-block td, .mini td {
+                background: #f8fafc; border-radius: 8px; padding: 0;
+                text-align: center; font-size: 12px; height: 40px;
+                overflow: hidden; user-select: none; -webkit-user-select: none;
+                touch-action: none; position: relative;
+        }
+        .mini td { height: 26px; font-size: 10px; }
+
+        /* Урок-чип: цветной блок на всю ячейку с внутренним отступом. */
+        .chip {
+                margin: 2px; height: calc(100% - 4px); border-radius: 6px;
+                color: #fff; font-weight: 700; padding: 2px 4px;
+                display: flex; flex-direction: column; align-items: center;
+                justify-content: center; gap: 1px; line-height: 1.15;
+                overflow: hidden; cursor: grab;
+                box-shadow: 0 1px 2px rgba(15, 23, 42, 0.18);
+        }
+        td.filled:active .chip { cursor: grabbing; }
+        .chip b { font-size: 11.5px; font-weight: 700; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .chip span { font-size: 9.5px; font-weight: 500; opacity: 0.92; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        /* Мини-чип обзора: просто короткое имя предмета мелким шрифтом. */
+        .mini .chip { font-size: 9.5px; font-weight: 700; }
+        .chip.conflict { box-shadow: 0 0 0 2px #fca5a5, 0 1px 2px rgba(15, 23, 42, 0.25); }
+
+        /* Состояния: выделение и цель перетаскивания — на ячейке. */
+        td.filled.selected { outline: 3px solid #2563eb; outline-offset: -3px; border-radius: 10px; }
+        td.drop-target { outline: 3px dashed #2563eb; outline-offset: -3px; background: #dbeafe !important; border-radius: 10px; }
+        .cell-x {
+                position: absolute; top: 3px; right: 3px; border: none;
+                background: rgba(255,255,255,0.35); color: #fff; width: 16px; height: 16px;
+                line-height: 14px; border-radius: 5px; cursor: pointer; font-size: 10px; padding: 0;
+        }
+        .cell-x:hover { background: rgba(255,255,255,0.55); }
+        .drag-ghost { position: fixed; z-index: 9999; pointer-events: none; transform: translate(-50%, -50%); background: #1d4ed8; color: #fff; padding: 3px 10px; border-radius: 8px; font-size: 12px; font-weight: 600; max-width: 220px; box-shadow: 0 6px 18px rgba(0,0,0,0.3); }
+
+        .class-block table.compact { border-spacing: 1px; }
+        .class-block table.compact th, .class-block table.compact td { height: 24px; font-size: 9px; }
+        .class-block table.compact .chip b { font-size: 8.5px; }
+        .class-block table.compact .chip span { display: none; }
+        .class-block.compact h3 { font-size: 11px; margin: 0 0 4px; }
+        .mini { border: 1px solid #e5e9f0; border-radius: 12px; padding: 10px; background: #fff; min-width: 0; box-shadow: 0 1px 3px rgba(15, 23, 42, 0.06); }
+        .mini .mini-title { display: block; background: none; border: none; padding: 0; margin: 0 0 8px; font-family: inherit; font-size: 13.5px; font-weight: 800; color: #1d4ed8; cursor: pointer; text-align: left; }
+        .mini .mini-title:hover { text-decoration: underline; }
+        .mini th.d, .mini td.day { width: 34px; }
+        .overview { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 14px; align-items: start; }
 </style>

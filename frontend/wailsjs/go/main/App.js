@@ -74,12 +74,12 @@ export function ExportRefsCSV(arg1, arg2) {
   return window['go']['main']['App']['ExportRefsCSV'](arg1, arg2);
 }
 
-export function Generate(arg1, arg2, arg3) {
-  return window['go']['main']['App']['Generate'](arg1, arg2, arg3);
+export function Generate(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['Generate'](arg1, arg2, arg3, arg4);
 }
 
-export function GeneratePrecise(arg1, arg2, arg3) {
-  return window['go']['main']['App']['GeneratePrecise'](arg1, arg2, arg3);
+export function GeneratePrecise(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['GeneratePrecise'](arg1, arg2, arg3, arg4);
 }
 
 export function GetSchoolSettings(arg1) {
@@ -172,6 +172,22 @@ export function SwapEntries(arg1, arg2, arg3, arg4, arg5, arg6) {
 
 export function UpdateLesson(arg1) {
   return window['go']['main']['App']['UpdateLesson'](arg1);
+}
+
+export function UpdateTeacher(arg1) {
+  return window['go']['main']['App']['UpdateTeacher'](arg1);
+}
+
+export function UpdateSubject(arg1) {
+  return window['go']['main']['App']['UpdateSubject'](arg1);
+}
+
+export function UpdateClass(arg1) {
+  return window['go']['main']['App']['UpdateClass'](arg1);
+}
+
+export function UpdateRoom(arg1) {
+  return window['go']['main']['App']['UpdateRoom'](arg1);
 }
 
 export function UpdateSchoolSettings(arg1, arg2) {

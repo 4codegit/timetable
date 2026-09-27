@@ -28,12 +28,12 @@ type Subject struct {
 
 // SchoolClass is a student group (10A, 11B, or a subgroup).
 type SchoolClass struct {
-	ID           int    `json:"id"`
-	SchoolID     int    `json:"school_id"`
-	Name         string `json:"name"`
-	Grade        int    `json:"grade"`
-	StudentCount int    `json:"student_count"`
-	SubgroupOf   *int   `json:"subgroup_of,omitempty"`
+	ID         int    `json:"id"`
+	SchoolID   int    `json:"school_id"`
+	Name       string `json:"name"`
+	Grade      int    `json:"grade"`
+	RoomID     int    `json:"room_id"` // домашний кабинет класса
+	SubgroupOf *int   `json:"subgroup_of,omitempty"`
 }
 
 // Room is a physical location lessons happen in.
@@ -41,7 +41,6 @@ type Room struct {
 	ID       int    `json:"id"`
 	SchoolID int    `json:"school_id"`
 	Name     string `json:"name"`
-	Capacity int    `json:"capacity"`
 	RoomType string `json:"room_type"`
 }
 
@@ -91,4 +90,9 @@ type ScheduleEntry struct {
 type SchedulingConfig struct {
 	DaysPerWeek int `json:"days_per_week"`
 	SlotsPerDay int `json:"slots_per_day"`
+	// DaysMask marks which weekdays are school days: bit 0 = Monday …
+	// bit 6 = Sunday. 0 means "DaysPerWeek days from Monday" (legacy
+	// behaviour). Days outside the mask are forbidden to the solvers,
+	// hidden in the UI grid and skipped in PDF exports.
+	DaysMask int `json:"days_mask"`
 }
