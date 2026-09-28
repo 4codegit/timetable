@@ -102,6 +102,15 @@ func main() {
 		if _, err := os.Stat(dist); err != nil {
 			dist = "../frontend/dist"
 		}
+		if _, err := os.Stat(dist); err != nil {
+			// Windows/переносной запуск: папка dist рядом с exe.
+			if exe, e := os.Executable(); e == nil {
+				cand := filepath.Join(filepath.Dir(exe), "frontend", "dist")
+				if _, err2 := os.Stat(cand); err2 == nil {
+					dist = cand
+				}
+			}
+		}
 		if r.URL.Path == "/" || r.URL.Path == "/index.html" {
 			b, err := os.ReadFile(filepath.Join(dist, "index.html"))
 			if err != nil {

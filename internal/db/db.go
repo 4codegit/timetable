@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"log"
 
-	_ "github.com/mattn/go-sqlite3"
+	_ "modernc.org/sqlite"
 
 	"timetable/internal/domain"
 )
@@ -31,7 +31,7 @@ type Store struct {
 
 // New opens (or creates) the SQLite database and runs migrations.
 func New(path string) (*Store, error) {
-	d, err := sql.Open("sqlite3", path+"?_foreign_keys=on")
+	d, err := sql.Open("sqlite", path+"?_pragma=foreign_keys(1)")
 	if err != nil {
 		return nil, err
 	}
