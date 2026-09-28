@@ -13,7 +13,7 @@ type Teacher struct {
 	SchoolID        int    `json:"school_id"`
 	Name            string `json:"name"`
 	ShortName       string `json:"short_name"`
-	MaxHoursPerWeek int `json:"max_hours_per_week"`
+	MaxHoursPerWeek int    `json:"max_hours_per_week"`
 }
 
 // Subject is a course taught (Math, Physics, ...).

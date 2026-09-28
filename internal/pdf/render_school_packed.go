@@ -11,14 +11,14 @@ import (
 // table carries a small caption with the class name above it.
 func renderSchoolPacked(pdf *gopdf.GoPdf, opts Options, th ascTheme, dayIdx []int, pageW, pageH float64) {
 	const (
-		margin   = 10.0
-		footerH  = 8.0
-		dayColW  = 12.0
-		hdrH     = 9.0
-		capH     = 5.0
-		gap      = 6.0
-		minColW  = 14.0
-		minRowH  = 6.0
+		margin  = 10.0
+		footerH = 8.0
+		dayColW = 12.0
+		hdrH    = 9.0
+		capH    = 5.0
+		gap     = 6.0
+		minColW = 14.0
+		minRowH = 6.0
 	)
 	daysN := len(dayIdx)
 	n := len(opts.Rows)

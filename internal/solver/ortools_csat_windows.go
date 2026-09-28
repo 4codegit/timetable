@@ -208,7 +208,6 @@ func ortoolsSolve(in SolveInput, parallelism int, timeout time.Duration) (Result
 			RoomID:    int(roomIDsOut[i]),
 			DayOfWeek: int(dayArr[i]),
 			Timeslot:  int(slotArr[i]),
-			WeekType:  0,
 		})
 	}
 	return Result{Entries: entries, Placed: len(entries), Total: n, Violations: 0}, true

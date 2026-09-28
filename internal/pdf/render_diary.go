@@ -170,12 +170,12 @@ func ascTimetableFooter(pdf *gopdf.GoPdf, opts Options, pageW, pageH, margin flo
 // rest of the sheet stays empty (like the aSc reference prints).
 func renderASCPrintPages(pdf *gopdf.GoPdf, opts Options, th ascTheme, dayIdx []int, pageW, pageH float64) {
 	const (
-		margin   = 10.0
-		footerH  = 8.0
-		dayColW  = 18.0
-		hdrH     = 10.0
-		maxRowH  = 11.0
-		maxColW  = 45.0
+		margin  = 10.0
+		footerH = 8.0
+		dayColW = 18.0
+		hdrH    = 10.0
+		maxRowH = 11.0
+		maxColW = 45.0
 	)
 	daysN := len(dayIdx)
 	mid := "#555555"

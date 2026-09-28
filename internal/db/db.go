@@ -172,7 +172,7 @@ func (s *Store) migrate() error {
 			 grade INTEGER DEFAULT 0,
 			 room_id INTEGER REFERENCES rooms(id),
 			 subgroup_of INTEGER REFERENCES classes(id) ON DELETE CASCADE`,
-			`INSERT INTO classes_new SELECT id, school_id, name, grade, ` + roomSel + `, subgroup_of FROM classes`); err != nil {
+			`INSERT INTO classes_new SELECT id, school_id, name, grade, `+roomSel+`, subgroup_of FROM classes`); err != nil {
 			return err
 		}
 	}
