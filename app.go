@@ -335,7 +335,6 @@ func (a *App) ExportRefsCSV(schoolID int, entity string) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		w.Write([]string{"name", "short_name", "max_hours_per_week"})
 		for _, t := range ts {
 			w.Write([]string{t.Name, t.ShortName, strconv.Itoa(t.MaxHoursPerWeek)})
 		}
@@ -345,7 +344,6 @@ func (a *App) ExportRefsCSV(schoolID int, entity string) (string, error) {
 			return "", err
 		}
 		rs, _ := a.store.ListRooms(schoolID)
-		w.Write([]string{"name", "grade", "room"})
 		for _, c := range cs {
 			room := ""
 			for _, r := range rs {
@@ -360,7 +358,6 @@ func (a *App) ExportRefsCSV(schoolID int, entity string) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		w.Write([]string{"name", "short_name", "requires_room_type"})
 		for _, s := range ss {
 			w.Write([]string{s.Name, s.ShortName, s.RequiresRoomType})
 		}
@@ -369,7 +366,6 @@ func (a *App) ExportRefsCSV(schoolID int, entity string) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		w.Write([]string{"name", "room_type"})
 		for _, r := range rs {
 			w.Write([]string{r.Name, r.RoomType})
 		}
@@ -393,13 +389,11 @@ func (a *App) ExportRefsCSV(schoolID int, entity string) (string, error) {
 		for _, t := range ts {
 			tMap[t.ID] = t.Name
 		}
-		w.Write([]string{"class", "subject", "teacher", "hours_per_week", "min_gap_days"})
 		for _, l := range ls {
 			w.Write([]string{cMap[l.ClassID], sMap[l.SubjectID], tMap[l.TeacherID], strconv.Itoa(l.HoursPerWeek), strconv.Itoa(l.MinGapDays)})
 		}
 	case "periods":
 		st := a.loadSettings(schoolID)
-		w.Write([]string{"period", "start", "end"})
 		for i, p := range st.Periods {
 			w.Write([]string{strconv.Itoa(i + 1), p.Start, p.End})
 		}
@@ -423,7 +417,7 @@ func (a *App) ImportRefsCSV(schoolID int, entity string, csvText string) (int, e
 	if err != nil {
 		return 0, fmt.Errorf("csv parse: %w", err)
 	}
-	if len(records) < 2 {
+	if len(records) < 1 {
 		return 0, fmt.Errorf("no data rows")
 	}
 	// skip header if first field looks like a header
@@ -556,7 +550,7 @@ func (a *App) ImportRefsCSV(schoolID int, entity string, csvText string) (int, e
 					gap = v
 				}
 			}
-			if _, err := a.store.CreateLesson(domain.Lesson{SchoolID: schoolID, ClassID: classID, SubjectID: subjID, TeacherID: teachID, HoursPerWeek: hours, MinGapDays: gap, CanSplit: false, PreferredRooms: "[]"}); err != nil {
+			if _, err := a.store.CreateLesson(domain.Lesson{SchoolID: schoolID, ClassID: classID, SubjectID: subjID, TeacherID: teachID, HoursPerWeek: hours, MinGapDays: gap, PreferredRooms: "[]"}); err != nil {
 				return count, err
 			}
 			count++

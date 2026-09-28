@@ -149,7 +149,6 @@ func ImportAll(s *db.Store, snap *Snapshot) (*domain.School, error) {
 			oldID := t.ID
 			t.SchoolID = schoolID
 			t.ID = 0
-			t.PreferencesJSON = orEmptyJSON(t.PreferencesJSON)
 			created, err := tx.CreateTeacher(t)
 			if err != nil {
 				return fmt.Errorf("create teacher %q: %w", t.Name, err)
@@ -254,7 +253,6 @@ func ImportAll(s *db.Store, snap *Snapshot) (*domain.School, error) {
 					return fmt.Errorf("constraint references a missing %s", c.EntityType)
 				}
 			}
-			c.ParamsJSON = orEmptyJSON(c.ParamsJSON)
 			if _, err := tx.CreateConstraint(c); err != nil {
 				return fmt.Errorf("create constraint: %w", err)
 			}

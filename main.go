@@ -40,7 +40,7 @@ func main() {
 
 // NewApp wires the database store into the Wails App.
 func NewApp() *App {
-	store, err := db.New("./timetable.db")
+	store, err := db.New(dbPath())
 	if err != nil {
 		log.Fatalf("db init failed: %v", err)
 	}

@@ -13,8 +13,7 @@ type Teacher struct {
 	SchoolID        int    `json:"school_id"`
 	Name            string `json:"name"`
 	ShortName       string `json:"short_name"`
-	MaxHoursPerWeek int    `json:"max_hours_per_week"`
-	PreferencesJSON string `json:"preferences_json"`
+	MaxHoursPerWeek int `json:"max_hours_per_week"`
 }
 
 // Subject is a course taught (Math, Physics, ...).
@@ -53,7 +52,6 @@ type Lesson struct {
 	TeacherID      int    `json:"teacher_id"`
 	HoursPerWeek   int    `json:"hours_per_week"`
 	MinGapDays     int    `json:"min_gap_days"`
-	CanSplit       bool   `json:"can_split"`
 	PreferredRooms string `json:"preferred_rooms"`
 }
 
@@ -69,7 +67,6 @@ type Constraint struct {
 	TimeslotEnd   *int   `json:"timeslot_end,omitempty"`
 	Weight        int    `json:"weight"`
 	IsHard        bool   `json:"is_hard"`
-	ParamsJSON    string `json:"params_json"`
 }
 
 // ScheduleEntry is one concrete placement of a lesson occurrence.
@@ -83,7 +80,6 @@ type ScheduleEntry struct {
 	RoomID    int `json:"room_id"`
 	DayOfWeek int `json:"day_of_week"`
 	Timeslot  int `json:"timeslot"`
-	WeekType  int `json:"week_type"` // 0=every, 1=odd, 2=even
 }
 
 // SchedulingConfig controls the solver grid size.

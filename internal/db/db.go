@@ -54,8 +54,7 @@ func (s *Store) migrate() error {
 			school_id INTEGER REFERENCES schools(id) ON DELETE CASCADE,
 			name TEXT NOT NULL,
 			short_name TEXT,
-			max_hours_per_week INTEGER DEFAULT 30,
-			preferences_json TEXT DEFAULT '{}'
+			max_hours_per_week INTEGER DEFAULT 30
 		)`,
 		`CREATE TABLE IF NOT EXISTS subjects (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -86,7 +85,6 @@ func (s *Store) migrate() error {
 			teacher_id INTEGER REFERENCES teachers(id) ON DELETE CASCADE,
 			hours_per_week INTEGER NOT NULL DEFAULT 1,
 			min_gap_days INTEGER DEFAULT 1,
-			can_split BOOLEAN DEFAULT FALSE,
 			preferred_rooms TEXT DEFAULT '[]'
 		)`,
 		`CREATE TABLE IF NOT EXISTS constraints (
@@ -99,8 +97,7 @@ func (s *Store) migrate() error {
 			timeslot_start INTEGER,
 			timeslot_end INTEGER,
 			weight INTEGER DEFAULT 100,
-			is_hard BOOLEAN DEFAULT TRUE,
-			params_json TEXT DEFAULT '{}'
+			is_hard BOOLEAN DEFAULT TRUE
 		)`,
 		`CREATE TABLE IF NOT EXISTS schedule_entries (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -111,8 +108,7 @@ func (s *Store) migrate() error {
 			subject_id INTEGER REFERENCES subjects(id) ON DELETE CASCADE,
 			room_id INTEGER REFERENCES rooms(id) ON DELETE CASCADE,
 			day_of_week INTEGER NOT NULL,
-			timeslot INTEGER NOT NULL,
-			week_type INTEGER DEFAULT 0
+			timeslot INTEGER NOT NULL
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_se_lookup ON schedule_entries(school_id, day_of_week, timeslot)`,
 	}
@@ -187,6 +183,62 @@ func (s *Store) migrate() error {
 			 name TEXT NOT NULL,
 			 room_type TEXT DEFAULT 'any'`,
 			`INSERT INTO rooms_new SELECT id, school_id, name, room_type FROM rooms`); err != nil {
+			return err
+		}
+	}
+	if colExists("teachers", "preferences_json") {
+		if err := rebuild("teachers",
+			`id INTEGER PRIMARY KEY AUTOINCREMENT,
+			 school_id INTEGER REFERENCES schools(id) ON DELETE CASCADE,
+			 name TEXT NOT NULL,
+			 short_name TEXT,
+			 max_hours_per_week INTEGER DEFAULT 30`,
+			`INSERT INTO teachers_new SELECT id, school_id, name, short_name, max_hours_per_week FROM teachers`); err != nil {
+			return err
+		}
+	}
+	if colExists("lessons", "can_split") {
+		if err := rebuild("lessons",
+			`id INTEGER PRIMARY KEY AUTOINCREMENT,
+			 school_id INTEGER REFERENCES schools(id) ON DELETE CASCADE,
+			 class_id INTEGER REFERENCES classes(id) ON DELETE CASCADE,
+			 subject_id INTEGER REFERENCES subjects(id) ON DELETE CASCADE,
+			 teacher_id INTEGER REFERENCES teachers(id) ON DELETE CASCADE,
+			 hours_per_week INTEGER NOT NULL DEFAULT 1,
+			 min_gap_days INTEGER DEFAULT 1,
+			 preferred_rooms TEXT DEFAULT '[]'`,
+			`INSERT INTO lessons_new SELECT id, school_id, class_id, subject_id, teacher_id, hours_per_week, min_gap_days, preferred_rooms FROM lessons`); err != nil {
+			return err
+		}
+	}
+	if colExists("constraints", "params_json") {
+		if err := rebuild("constraints",
+			`id INTEGER PRIMARY KEY AUTOINCREMENT,
+			 school_id INTEGER REFERENCES schools(id) ON DELETE CASCADE,
+			 type TEXT NOT NULL,
+			 entity_type TEXT NOT NULL,
+			 entity_id INTEGER NOT NULL,
+			 day_of_week INTEGER,
+			 timeslot_start INTEGER,
+			 timeslot_end INTEGER,
+			 weight INTEGER DEFAULT 100,
+			 is_hard BOOLEAN DEFAULT TRUE`,
+			`INSERT INTO constraints_new SELECT id, school_id, type, entity_type, entity_id, day_of_week, timeslot_start, timeslot_end, weight, is_hard FROM constraints`); err != nil {
+			return err
+		}
+	}
+	if colExists("schedule_entries", "week_type") {
+		if err := rebuild("schedule_entries",
+			`id INTEGER PRIMARY KEY AUTOINCREMENT,
+			 school_id INTEGER REFERENCES schools(id) ON DELETE CASCADE,
+			 lesson_id INTEGER REFERENCES lessons(id) ON DELETE CASCADE,
+			 class_id INTEGER REFERENCES classes(id) ON DELETE CASCADE,
+			 teacher_id INTEGER REFERENCES teachers(id) ON DELETE CASCADE,
+			 subject_id INTEGER REFERENCES subjects(id) ON DELETE CASCADE,
+			 room_id INTEGER REFERENCES rooms(id) ON DELETE CASCADE,
+			 day_of_week INTEGER NOT NULL,
+			 timeslot INTEGER NOT NULL`,
+			`INSERT INTO schedule_entries_new SELECT id, school_id, lesson_id, class_id, teacher_id, subject_id, room_id, day_of_week, timeslot FROM schedule_entries`); err != nil {
 			return err
 		}
 	}
@@ -278,8 +330,8 @@ func (s *Store) UpdateSchoolSettings(id int, settings string) error {
 // ---- Teachers ----
 
 func (s *Store) CreateTeacher(t domain.Teacher) (*domain.Teacher, error) {
-	res, err := s.db.Exec(`INSERT INTO teachers (school_id, name, short_name, max_hours_per_week, preferences_json) VALUES (?,?,?,?,?)`,
-		t.SchoolID, t.Name, t.ShortName, t.MaxHoursPerWeek, orDefault(t.PreferencesJSON, "{}"))
+	res, err := s.db.Exec(`INSERT INTO teachers (school_id, name, short_name, max_hours_per_week) VALUES (?,?,?,?)`,
+		t.SchoolID, t.Name, t.ShortName, t.MaxHoursPerWeek)
 	if err != nil {
 		return nil, err
 	}
@@ -289,7 +341,7 @@ func (s *Store) CreateTeacher(t domain.Teacher) (*domain.Teacher, error) {
 }
 
 func (s *Store) ListTeachers(schoolID int) ([]domain.Teacher, error) {
-	rows, err := s.db.Query(`SELECT id, school_id, name, short_name, max_hours_per_week, preferences_json FROM teachers WHERE school_id=?`, schoolID)
+	rows, err := s.db.Query(`SELECT id, school_id, name, short_name, max_hours_per_week FROM teachers WHERE school_id=?`, schoolID)
 	if err != nil {
 		return nil, err
 	}
@@ -297,7 +349,7 @@ func (s *Store) ListTeachers(schoolID int) ([]domain.Teacher, error) {
 	var out []domain.Teacher
 	for rows.Next() {
 		var t domain.Teacher
-		if err := rows.Scan(&t.ID, &t.SchoolID, &t.Name, &t.ShortName, &t.MaxHoursPerWeek, &t.PreferencesJSON); err != nil {
+		if err := rows.Scan(&t.ID, &t.SchoolID, &t.Name, &t.ShortName, &t.MaxHoursPerWeek); err != nil {
 			return nil, err
 		}
 		out = append(out, t)
@@ -410,8 +462,8 @@ func (s *Store) ListRooms(schoolID int) ([]domain.Room, error) {
 // ---- Lessons ----
 
 func (s *Store) CreateLesson(l domain.Lesson) (*domain.Lesson, error) {
-	res, err := s.db.Exec(`INSERT INTO lessons (school_id, class_id, subject_id, teacher_id, hours_per_week, min_gap_days, can_split, preferred_rooms) VALUES (?,?,?,?,?,?,?,?)`,
-		l.SchoolID, l.ClassID, l.SubjectID, l.TeacherID, l.HoursPerWeek, l.MinGapDays, l.CanSplit, orDefault(l.PreferredRooms, "[]"))
+	res, err := s.db.Exec(`INSERT INTO lessons (school_id, class_id, subject_id, teacher_id, hours_per_week, min_gap_days, preferred_rooms) VALUES (?,?,?,?,?,?,?)`,
+		l.SchoolID, l.ClassID, l.SubjectID, l.TeacherID, l.HoursPerWeek, l.MinGapDays, orDefault(l.PreferredRooms, "[]"))
 	if err != nil {
 		return nil, err
 	}
@@ -421,7 +473,7 @@ func (s *Store) CreateLesson(l domain.Lesson) (*domain.Lesson, error) {
 }
 
 func (s *Store) ListLessons(schoolID int) ([]domain.Lesson, error) {
-	rows, err := s.db.Query(`SELECT id, school_id, class_id, subject_id, teacher_id, hours_per_week, min_gap_days, can_split, preferred_rooms FROM lessons WHERE school_id=?`, schoolID)
+	rows, err := s.db.Query(`SELECT id, school_id, class_id, subject_id, teacher_id, hours_per_week, min_gap_days, preferred_rooms FROM lessons WHERE school_id=?`, schoolID)
 	if err != nil {
 		return nil, err
 	}
@@ -429,11 +481,9 @@ func (s *Store) ListLessons(schoolID int) ([]domain.Lesson, error) {
 	var out []domain.Lesson
 	for rows.Next() {
 		var l domain.Lesson
-		var canSplit bool
-		if err := rows.Scan(&l.ID, &l.SchoolID, &l.ClassID, &l.SubjectID, &l.TeacherID, &l.HoursPerWeek, &l.MinGapDays, &canSplit, &l.PreferredRooms); err != nil {
+		if err := rows.Scan(&l.ID, &l.SchoolID, &l.ClassID, &l.SubjectID, &l.TeacherID, &l.HoursPerWeek, &l.MinGapDays, &l.PreferredRooms); err != nil {
 			return nil, err
 		}
-		l.CanSplit = canSplit
 		out = append(out, l)
 	}
 	return out, nil
@@ -445,14 +495,14 @@ func (s *Store) DeleteLesson(id int) error {
 }
 
 func (s *Store) UpdateLesson(l domain.Lesson) error {
-	_, err := s.db.Exec(`UPDATE lessons SET class_id=?, subject_id=?, teacher_id=?, hours_per_week=?, min_gap_days=?, can_split=?, preferred_rooms=? WHERE id=?`,
-		l.ClassID, l.SubjectID, l.TeacherID, l.HoursPerWeek, l.MinGapDays, l.CanSplit, orDefault(l.PreferredRooms, "[]"), l.ID)
+	_, err := s.db.Exec(`UPDATE lessons SET class_id=?, subject_id=?, teacher_id=?, hours_per_week=?, min_gap_days=?, preferred_rooms=? WHERE id=?`,
+		l.ClassID, l.SubjectID, l.TeacherID, l.HoursPerWeek, l.MinGapDays, orDefault(l.PreferredRooms, "[]"), l.ID)
 	return err
 }
 
 func (s *Store) UpdateTeacher(t domain.Teacher) error {
-	_, err := s.db.Exec(`UPDATE teachers SET name=?, short_name=?, max_hours_per_week=?, preferences_json=? WHERE id=?`,
-		t.Name, t.ShortName, t.MaxHoursPerWeek, orDefault(t.PreferencesJSON, "{}"), t.ID)
+	_, err := s.db.Exec(`UPDATE teachers SET name=?, short_name=?, max_hours_per_week=? WHERE id=?`,
+		t.Name, t.ShortName, t.MaxHoursPerWeek, t.ID)
 	return err
 }
 
@@ -515,8 +565,8 @@ func (s *Store) DeleteScheduleEntry(id int) error {
 // ---- Constraints ----
 
 func (s *Store) CreateConstraint(c domain.Constraint) (*domain.Constraint, error) {
-	res, err := s.db.Exec(`INSERT INTO constraints (school_id, type, entity_type, entity_id, day_of_week, timeslot_start, timeslot_end, weight, is_hard, params_json) VALUES (?,?,?,?,?,?,?,?,?,?)`,
-		c.SchoolID, c.Type, c.EntityType, c.EntityID, c.DayOfWeek, c.TimeslotStart, c.TimeslotEnd, c.Weight, c.IsHard, orDefault(c.ParamsJSON, "{}"))
+	res, err := s.db.Exec(`INSERT INTO constraints (school_id, type, entity_type, entity_id, day_of_week, timeslot_start, timeslot_end, weight, is_hard) VALUES (?,?,?,?,?,?,?,?,?)`,
+		c.SchoolID, c.Type, c.EntityType, c.EntityID, c.DayOfWeek, c.TimeslotStart, c.TimeslotEnd, c.Weight, c.IsHard)
 	if err != nil {
 		return nil, err
 	}
@@ -526,7 +576,7 @@ func (s *Store) CreateConstraint(c domain.Constraint) (*domain.Constraint, error
 }
 
 func (s *Store) ListConstraints(schoolID int) ([]domain.Constraint, error) {
-	rows, err := s.db.Query(`SELECT id, school_id, type, entity_type, entity_id, day_of_week, timeslot_start, timeslot_end, weight, is_hard, params_json FROM constraints WHERE school_id=?`, schoolID)
+	rows, err := s.db.Query(`SELECT id, school_id, type, entity_type, entity_id, day_of_week, timeslot_start, timeslot_end, weight, is_hard FROM constraints WHERE school_id=?`, schoolID)
 	if err != nil {
 		return nil, err
 	}
@@ -536,7 +586,7 @@ func (s *Store) ListConstraints(schoolID int) ([]domain.Constraint, error) {
 		var c domain.Constraint
 		var dow, ts, te sql.NullInt32
 		var hard sql.NullBool
-		if err := rows.Scan(&c.ID, &c.SchoolID, &c.Type, &c.EntityType, &c.EntityID, &dow, &ts, &te, &c.Weight, &hard, &c.ParamsJSON); err != nil {
+		if err := rows.Scan(&c.ID, &c.SchoolID, &c.Type, &c.EntityType, &c.EntityID, &dow, &ts, &te, &c.Weight, &hard); err != nil {
 			return nil, err
 		}
 		c.IsHard = hard.Bool
@@ -574,14 +624,14 @@ func (s *Store) SaveSchedule(entries []domain.ScheduleEntry) error {
 	if err != nil {
 		return err
 	}
-	stmt, err := tx.Prepare(`INSERT INTO schedule_entries (school_id, lesson_id, class_id, teacher_id, subject_id, room_id, day_of_week, timeslot, week_type) VALUES (?,?,?,?,?,?,?,?,?)`)
+	stmt, err := tx.Prepare(`INSERT INTO schedule_entries (school_id, lesson_id, class_id, teacher_id, subject_id, room_id, day_of_week, timeslot) VALUES (?,?,?,?,?,?,?,?)`)
 	if err != nil {
 		tx.Rollback()
 		return err
 	}
 	defer stmt.Close()
 	for _, e := range entries {
-		if _, err := stmt.Exec(e.SchoolID, e.LessonID, e.ClassID, e.TeacherID, e.SubjectID, e.RoomID, e.DayOfWeek, e.Timeslot, e.WeekType); err != nil {
+		if _, err := stmt.Exec(e.SchoolID, e.LessonID, e.ClassID, e.TeacherID, e.SubjectID, e.RoomID, e.DayOfWeek, e.Timeslot); err != nil {
 			tx.Rollback()
 			return err
 		}
@@ -590,7 +640,7 @@ func (s *Store) SaveSchedule(entries []domain.ScheduleEntry) error {
 }
 
 func (s *Store) ListSchedule(schoolID int) ([]domain.ScheduleEntry, error) {
-	rows, err := s.db.Query(`SELECT id, school_id, lesson_id, class_id, teacher_id, subject_id, room_id, day_of_week, timeslot, week_type FROM schedule_entries WHERE school_id=?`, schoolID)
+	rows, err := s.db.Query(`SELECT id, school_id, lesson_id, class_id, teacher_id, subject_id, room_id, day_of_week, timeslot FROM schedule_entries WHERE school_id=?`, schoolID)
 	if err != nil {
 		return nil, err
 	}
@@ -598,7 +648,7 @@ func (s *Store) ListSchedule(schoolID int) ([]domain.ScheduleEntry, error) {
 	var out []domain.ScheduleEntry
 	for rows.Next() {
 		var e domain.ScheduleEntry
-		if err := rows.Scan(&e.ID, &e.SchoolID, &e.LessonID, &e.ClassID, &e.TeacherID, &e.SubjectID, &e.RoomID, &e.DayOfWeek, &e.Timeslot, &e.WeekType); err != nil {
+		if err := rows.Scan(&e.ID, &e.SchoolID, &e.LessonID, &e.ClassID, &e.TeacherID, &e.SubjectID, &e.RoomID, &e.DayOfWeek, &e.Timeslot); err != nil {
 			return nil, err
 		}
 		out = append(out, e)
@@ -678,13 +728,13 @@ func (s *Store) replaceSchedule(schoolID int, entries []domain.ScheduleEntry) er
 	if len(entries) == 0 {
 		return nil
 	}
-	stmt, err := s.db.Prepare(`INSERT INTO schedule_entries (school_id, lesson_id, class_id, teacher_id, subject_id, room_id, day_of_week, timeslot, week_type) VALUES (?,?,?,?,?,?,?,?,?)`)
+	stmt, err := s.db.Prepare(`INSERT INTO schedule_entries (school_id, lesson_id, class_id, teacher_id, subject_id, room_id, day_of_week, timeslot) VALUES (?,?,?,?,?,?,?,?)`)
 	if err != nil {
 		return err
 	}
 	defer stmt.Close()
 	for _, e := range entries {
-		if _, err := stmt.Exec(e.SchoolID, e.LessonID, e.ClassID, e.TeacherID, e.SubjectID, e.RoomID, e.DayOfWeek, e.Timeslot, e.WeekType); err != nil {
+		if _, err := stmt.Exec(e.SchoolID, e.LessonID, e.ClassID, e.TeacherID, e.SubjectID, e.RoomID, e.DayOfWeek, e.Timeslot); err != nil {
 			return err
 		}
 	}

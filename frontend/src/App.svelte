@@ -164,6 +164,15 @@
                 if (schools.length && !activeSchoolID) activeSchoolID = schools[0].id;
                 await loadSettings();
         }
+        async function deleteSchool() {
+                if (!activeSchoolID) return;
+                const name = schools.find((s) => s.id === activeSchoolID)?.name || "";
+                if (!confirmAction("Удалить школу «" + name + "»? Будут удалены ВСЕ её данные: классы, учителя, предметы, кабинеты, уроки и расписание.")) return;
+                await DeleteSchool(activeSchoolID);
+                activeSchoolID = 0;
+                await loadSchools();
+                flash("Школа удалена");
+        }
         async function createSchool() {
                 if (!newSchoolName.trim()) { flash("Введите название школы"); return; }
                 const sc = await CreateSchool(newSchoolName);
@@ -948,8 +957,8 @@
                                 {#if schools.length === 0}<span class="muted">нет школ</span>{/if}
                                 <input class="school-new" bind:value={newSchoolName} placeholder="Новая школа" />
                                 <button class="primary sm" on:click={createSchool}>+ Школа</button>
-                                {#if schools.length > 1}
-                                        <button class="danger sm" on:click={async () => { if (await confirmAction('Удалить школу «' + (schools.find(s => s.id === activeSchoolID)?.name || '') + '» и все данные?')) { await DeleteSchool(activeSchoolID); activeSchoolID = 0; await loadSchools(); flash('Школа удалена'); } }}>✕</button>
+                                {#if activeSchoolID}
+                                <button class="danger sm" on:click={deleteSchool} title="Удалить текущую школу со всеми данными">🗑</button>
                                 {/if}
                         </div>
                         {#if msg}<div class="toast">{msg}</div>{/if}
@@ -999,14 +1008,12 @@
                                                 <div class="row">
                                                         <input bind:value={s.name} placeholder="Название" />
                                                         <input bind:value={s.short_name} placeholder="Кратко" />
-                                                        <input bind:value={s.requires_room_type} placeholder="Тип каб." />
                                                         <button class="primary" on:click={addSubject}>+</button>
                                                 </div>
                                                 <ul class="list">{#each subjects as x}<li>
                                                         {#if editing && editing.kind === "subject" && editing.id === x.id}
                                                                 <input class="edit" bind:value={x.name} placeholder="Название" />
                                                                 <input class="edit w-s" bind:value={x.short_name} placeholder="Кратко" />
-                                                                <input class="edit w-s" bind:value={x.requires_room_type} placeholder="Тип каб." />
                                                                 <button class="primary sm" on:click={() => saveEdit("subject", x)} title="Сохранить">✓</button>
                                                                 <button class="sm" on:click={cancelEdit} title="Отмена">✗</button>
                                                         {:else}
@@ -1057,7 +1064,6 @@
                                                 </div>
                                                 <div class="row">
                                                         <input bind:value={r.name} placeholder="301" />
-                                                        <input bind:value={r.room_type} placeholder="Тип" />
                                                         <button class="primary" on:click={addRoom}>+</button>
                                                 </div>
                                                 <ul class="list">{#each rooms as x}<li>

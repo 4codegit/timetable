@@ -659,7 +659,6 @@ func buildEntries(in SolveInput, assign []cell, occ []Occurrence) []domain.Sched
 			RoomID:    c.room,
 			DayOfWeek: c.day,
 			Timeslot:  c.slot,
-			WeekType:  0,
 		})
 	}
 	return entries

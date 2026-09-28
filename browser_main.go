@@ -34,7 +34,7 @@ var browserShim []byte
 
 // newBrowserApp mirrors main.go's NewApp for the browser build.
 func newBrowserApp() *App {
-	store, err := db.New("./timetable.db")
+	store, err := db.New(dbPath())
 	if err != nil {
 		log.Fatalf("db init failed: %v", err)
 	}
