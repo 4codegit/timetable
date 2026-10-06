@@ -271,7 +271,7 @@
         function computeConflictIDs(schedule, constraints) {
                 const ids = new Set();
                 // Учитель/кабинет: группируем по (значение, день, слот).
-                const maps = { teacher_id: {}, room_id: {}, class_pairs: {} };
+                const maps = { teacher_id: {}, class_id: {}, room_id: {} };
                 for (const e of schedule) {
                         const k = e.day_of_week * 1000 + e.timeslot;
                         const tv = e.teacher_id, rv = e.room_id;
@@ -288,8 +288,9 @@
                         // Класс: пары уроков в одном слоте — конфликт, если
                         // тела пересекаются (целый класс vs его подгруппа);
                         // две подгруппы одного родителя disjoint — можно параллельно.
-                        const ck = e.day_of_week + ":" + e.timeslot;
-                        (maps.class_pairs[ck] = maps.class_pairs[ck] || []).push(e);
+                        if (!maps.class_id[e.class_id]) maps.class_id[e.class_id] = {};
+                        if (!maps.class_id[e.class_id][k]) maps.class_id[e.class_id][k] = [];
+                        maps.class_id[e.class_id][k].push(e.id);
                 }
                 for (const f of ["teacher_id"]) {
                         for (const v in maps[f]) {
@@ -313,23 +314,11 @@
                                 }
                         }
                 }
-                for (const ck in maps.class_pairs) {
-                        const arr = maps.class_pairs[ck];
-                        for (let i = 0; i < arr.length; i++) {
-                                for (let j = i + 1; j < arr.length; j++) {
-                                        const a = arr[i], b = arr[j];
-                                        if (a.class_id === b.class_id) {
-                                                ids.add(a.id); ids.add(b.id);
-                                                continue;
-                                        }
-                                        const ba = classBody(a.class_id), bb = classBody(b.class_id);
-                                        const inter = ba.some((x) => bb.includes(x));
-                                        const bothSub = subParentOf(a.class_id) && subParentOf(b.class_id) &&
-                                                subParentOf(a.class_id) === subParentOf(b.class_id);
-                                        if (inter && !bothSub) {
-                                                ids.add(a.id); ids.add(b.id);
-                                        }
-                                }
+                // Классы: дубль = один и тот же класс дважды в слоте.
+                // Родитель + подгруппа параллельно — законно (деление класса).
+                for (const cv in maps.class_id) {
+                        for (const k in maps.class_id[cv]) {
+                                if (maps.class_id[cv][k].length > 1) maps.class_id[cv][k].forEach((id) => ids.add(id));
                         }
                 }
                 for (const c of constraints) {
@@ -357,72 +346,21 @@
                 }
                 const labels = { teacher_id: "Учитель", class_id: "Класс", room_id: "Кабинет" };
                 const conflicts = [];
-                // Классы: попарное пересечение тел (не две подгруппы одного родителя)
-                const bodyOf = (cid) => {
-                        const b = [cid];
-                        for (const c of classes) if (c.subgroup_of === cid) b.push(c.id);
-                        return b;
-                };
-                // Учитель: группировка по значению
-                for (const key in byKey.teacher_id) {
-                        const arr = byKey.teacher_id[key];
-                        if (arr.length > 1) {
-                                const kk = Number(key.split(":")[1]);
-                                const day = Math.floor(kk / 1000), slot = kk % 1000;
-                                conflicts.push({
-                                        type: "Учитель", day, slot,
-                                        items: arr.map((e) => ({
-                                                subject: subjName(subjects, e.subject_id),
-                                                who: teachName(teachers, e.teacher_id)
-                                        }))
-                                });
-                        }
-                }
-                // Кабинет: попарно; одна семья класса делит кабинет законно
-                for (const key in byKey.room_id) {
-                        const arr = byKey.room_id[key];
-                        for (let i = 0; i < arr.length; i++) {
-                                for (let j = i + 1; j < arr.length; j++) {
-                                        const a = arr[i], b = arr[j];
-                                        const famA = classBody(a.class_id), famB = classBody(b.class_id);
-                                        const sameFamily = famA.includes(b.class_id) || famB.includes(a.class_id);
-                                        if (!sameFamily) {
-                                                const kk = Number(key.split(":")[1]);
-                                                const day = Math.floor(kk / 1000), slot = kk % 1000;
-                                                conflicts.push({
-                                                        type: "Кабинет", day, slot,
-                                                        items: [
-                                                                { subject: subjName(subjects, a.subject_id), who: (rooms.find((r) => r.id === a.room_id)?.name || "?") },
-                                                                { subject: subjName(subjects, b.subject_id), who: (rooms.find((r) => r.id === b.room_id)?.name || "?") }
-                                                        ]
-                                                });
-                                        }
-                                }
-                        }
-                }
-                // Классы: попарное пересечение тел (целый класс vs его подгруппа);
-                // две подгруппы одного родителя — параллельно можно.
-                for (const key in byKey.class_id) {
-                        const arr = byKey.class_id[key];
-                        if (arr.length < 2) continue;
-                        const kk = Number(key.split(":")[1]);
-                        const day = Math.floor(kk / 1000), slot = kk % 1000;
-                        for (let i = 0; i < arr.length; i++) {
-                                for (let j = i + 1; j < arr.length; j++) {
-                                        const a = arr[i], b = arr[j];
-                                        if (a.class_id === b.class_id) continue;
-                                        const inter = bodyOf(a.class_id).some((x) => bodyOf(b.class_id).includes(x));
-                                        const bothSub = subParentOf(a.class_id) && subParentOf(b.class_id) &&
-                                                subParentOf(a.class_id) === subParentOf(b.class_id);
-                                        if (inter && !bothSub) {
-                                                conflicts.push({
-                                                        type: "Класс", day, slot,
-                                                        items: [
-                                                                { subject: subjName(subjects, a.subject_id), who: className(classes, a.class_id) },
-                                                                { subject: subjName(subjects, b.subject_id), who: className(classes, b.class_id) }
-                                                        ]
-                                                });
-                                        }
+                // Классы: дубль = один и тот же класс дважды в слоте
+                // (родитель + подгруппа параллельно — законно).
+                for (const cv in byKey.class_id) {
+                        for (const key in byKey.class_id[cv]) {
+                                const arr = byKey.class_id[cv][key];
+                                if (arr.length > 1) {
+                                        const kk = Number(key.split(":")[1]);
+                                        const day = Math.floor(kk / 1000), slot = kk % 1000;
+                                        conflicts.push({
+                                                type: "Класс", day, slot,
+                                                items: arr.map((e) => ({
+                                                        subject: subjName(subjects, e.subject_id),
+                                                        who: className(classes, e.class_id)
+                                                }))
+                                        });
                                 }
                         }
                 }
@@ -584,8 +522,8 @@
                         return;
                 }
                 // Find target in same row at the destination cell.
-                // Для подгруппы: цель — любой урок этой строки в целевой ячейке
-                // (другая подгруппа → обмен; целый класс → запрещено ниже).
+                // Ячейка класса вмещает ДО ДВУХ уроков: целоклассовый +
+                // подгруппа, или две подгруппы параллельно (деление класса).
                 const target = schedule.find(en => {
                         if (en.id === id) return false;
                         if (en.day_of_week !== day || en.timeslot !== slot) return false;
@@ -593,19 +531,11 @@
                         if (kind === "teacher") return en.teacher_id === rowId;
                         return en.room_id === rowId;
                 });
-                // Целоклассовый урок не встаёт на подгруппы и наоборот:
-                const srcIsSub = kind === "class" && subParentOf(src.class_id) === rowId;
-                const tgtWhole = target && target.class_id === rowId;
-                const tgtSubs = target && target.class_id !== rowId && subParentOf(target.class_id) === rowId;
-                if (kind === "class") {
-                        if (!srcIsSub && tgtSubs) {
-                                flash("⚠ В это время занимаются подгруппы — вставьте урок в свободную ячейку.");
-                                return;
-                        }
-                        if (srcIsSub && tgtWhole) {
-                                flash("⚠ В это время урок всего класса — выберите свободную ячейку.");
-                                return;
-                        }
+                const cellCount = schedule.filter(en => en.id !== id && en.day_of_week === day && en.timeslot === slot &&
+                        (en.class_id === rowId || subParentOf(en.class_id) === rowId)).length;
+                if (kind === "class" && cellCount >= 2) {
+                        flash("⚠ Ячейка заполнена: максимум два урока (класс + подгруппа).");
+                        return;
                 }
 
                 // Snapshot for rollback if the backend rejects the change.
@@ -1429,7 +1359,7 @@
                                                                                                                 data-slot={si}
                                                                                                                 data-row={row.id}
                                                                                                                 data-kind={kind}
-                                                                                                                on:pointerdown={(e) => onPointerDown(e, cell, kind, row.id, activeDayIdx[di], si)}>{#if cell}<div class="chip" class:conflict={cell.conflict} style="background:{cell.conflict ? '#dc2626' : subjectColor(cell.subject_id)}">{subjShort(subjects, cell.subject_id)}</div>{:else}{#each cellSubs("class", row.id, activeDayIdx[di], si) as sc}<div class="chip half" style="background:{subjectColor(sc.subject_id)}" title="Подгруппа {classes.find((c) => c.id === sc.class_id)?.name || ''}">{subjShort(subjects, sc.subject_id)}</div>{/each}{/if}</td>{/each}</tr>
+                                                                                                                on:pointerdown={(e) => onPointerDown(e, cell, kind, row.id, activeDayIdx[di], si)}>{#if cell}<div class="chip" class:half={cellSubs("class", row.id, activeDayIdx[di], si).length > 0} class:conflict={cell.conflict} style="background:{cell.conflict ? '#dc2626' : subjectColor(cell.subject_id)}">{subjShort(subjects, cell.subject_id)}</div>{/if}{#each cellSubs("class", row.id, activeDayIdx[di], si) as sc}<div class="chip half" style="background:{subjectColor(sc.subject_id)}" title="Подгруппа {classes.find((c) => c.id === sc.class_id)?.name || ''}">{subjShort(subjects, sc.subject_id)}</div>{/each}</td>{/each}</tr>
                                                                                                 {/each}
                                                                                         </tbody>
                                                                                 </table>
@@ -1455,7 +1385,7 @@
                                                                                                         data-slot={si}
                                                                                                         data-row={row.id}
                                                                                                         data-kind={kind}
-                                                                                                        on:pointerdown={(e) => onPointerDown(e, cell, kind, row.id, activeDayIdx[di], si)}>{#if cell}<div class="chip" class:conflict={cell.conflict} style="background:{cell.conflict ? '#dc2626' : subjectColor(cell.subject_id)}"><b>{subjName(subjects, cell.subject_id)}</b>{#if pdfShowTeacher}<span>{teachName(teachers, cell.teacher_id)}</span>{/if}{#if pdfShowRoom && cell.room_id}<span>{rooms.find((r) => r.id === cell.room_id)?.name || ""}</span>{/if}</div><button class="cell-x" title="Удалить" on:click={(e) => { e.stopPropagation(); removeEntry(cell.id); }}>✕</button>{:else}{#each cellSubs(kind, row.id, activeDayIdx[di], si) as sc}<div class="chip half" class:conflict={conflictIDs.has(sc.id)} style="background:{conflictIDs.has(sc.id) ? '#dc2626' : subjectColor(sc.subject_id)}" title="Подгруппа {classes.find((c) => c.id === sc.class_id)?.name || ''}" on:pointerdown={(e) => { e.stopPropagation(); onPointerDown(e, cellAt("class", sc.class_id, activeDayIdx[di], si), "class", row.id, activeDayIdx[di], si); }}><b>{subjName(subjects, sc.subject_id)}</b>{#if pdfShowTeacher}<span>{teachName(teachers, sc.teacher_id)}</span>{/if}</div>{/each}{/if}</td>{/each}</tr>
+                                                                                                        on:pointerdown={(e) => onPointerDown(e, cell, kind, row.id, activeDayIdx[di], si)}>{#if cell}<div class="chip" class:half={cellSubs(kind, row.id, activeDayIdx[di], si).length > 0} class:conflict={cell.conflict} style="background:{cell.conflict ? '#dc2626' : subjectColor(cell.subject_id)}"><b>{subjName(subjects, cell.subject_id)}</b>{#if pdfShowTeacher}<span>{teachName(teachers, cell.teacher_id)}</span>{/if}{#if pdfShowRoom && cell.room_id}<span>{rooms.find((r) => r.id === cell.room_id)?.name || ""}</span>{/if}</div><button class="cell-x" title="Удалить" on:click={(e) => { e.stopPropagation(); removeEntry(cell.id); }}>✕</button>{/if}{#each cellSubs(kind, row.id, activeDayIdx[di], si) as sc}<div class="chip half" class:conflict={conflictIDs.has(sc.id)} style="background:{conflictIDs.has(sc.id) ? '#dc2626' : subjectColor(sc.subject_id)}" title="Подгруппа {classes.find((c) => c.id === sc.class_id)?.name || ''}" on:pointerdown={(e) => { e.stopPropagation(); onPointerDown(e, cellAt("class", sc.class_id, activeDayIdx[di], si), "class", row.id, activeDayIdx[di], si); }}><b>{subjName(subjects, sc.subject_id)}</b>{#if pdfShowTeacher}<span>{teachName(teachers, sc.teacher_id)}</span>{/if}</div>{/each}</td>{/each}</tr>
                                                                                         {/each}
                                                                                 </tbody>
                                                                         </table>
