@@ -839,6 +839,11 @@ func (a *App) ExportPDF(schoolID int, optionsJSON string) (string, error) {
 			return ""
 		}
 		for _, c := range cs {
+			// Подгруппы рисуются внутри таблицы родителя (разделённые
+			// ячейки) — отдельных таблиц для них не создаём.
+			if c.SubgroupOf != nil {
+				continue
+			}
 			// «Вся школа» — только классы с уроками: пустые классы
 			// превращают плакат в страницу пустых рамок.
 			if opts.Mode == "school" && !hasLessons[c.ID] {
@@ -875,13 +880,23 @@ func (a *App) ExportPDF(schoolID int, optionsJSON string) (string, error) {
 		busyT := map[occKey][]int{}
 		busyC := map[occKey][]int{}
 		busyR := map[occKey][]int{}
+		// Кабинет: уроки одной семьи класса (родитель + его подгруппы)
+		// могут делить кабинет — половины класса вмещаются.
+		familyOf := map[int]int{} // classID → родительский класс (или себя)
+		for _, c := range cs {
+			if c.SubgroupOf != nil {
+				familyOf[c.ID] = *c.SubgroupOf
+			} else {
+				familyOf[c.ID] = c.ID
+			}
+		}
 		for _, e := range entries {
 			k := occKey{e.TeacherID, e.DayOfWeek, e.Timeslot}
 			busyT[k] = append(busyT[k], e.ID)
 			k = occKey{e.ClassID, e.DayOfWeek, e.Timeslot}
 			busyC[k] = append(busyC[k], e.ID)
-			k = occKey{e.RoomID, e.DayOfWeek, e.Timeslot}
 			if e.RoomID != 0 {
+				k = occKey{familyOf[e.ClassID], e.DayOfWeek, e.Timeslot}
 				busyR[k] = append(busyR[k], e.ID)
 			}
 		}
@@ -908,38 +923,61 @@ func (a *App) ExportPDF(schoolID int, optionsJSON string) (string, error) {
 		}
 	}
 
+	// subParentID: id родителя, если класс — подгруппа (иначе 0).
+	subParentID := func(classID int) int {
+		for _, c := range cs {
+			if c.ID == classID && c.SubgroupOf != nil {
+				return *c.SubgroupOf
+			}
+		}
+		return 0
+	}
+
 	// Build a lookup so CellAt is O(1) per (row, day, slot).
+	// В ячейке может быть несколько уроков — параллельные подгруппы
+	// одного класса: CellAt отдаёт первый, CellSubs — остальные.
 	type cellKey struct{ day, slot int }
 	type cellInfo struct {
 		subjectID, teacherID, roomID, classID int
+		isSub                                 bool
 		conflict                              bool
 	}
-	lookup := map[int]map[cellKey]cellInfo{} // rowID -> (day,slot) -> info
+	lookup := map[int]map[cellKey][]cellInfo{} // rowID -> (day,slot) -> info
 	for _, e := range entries {
 		var rowID int
+		isSub := false
 		switch opts.Mode {
 		case "school", "class":
 			rowID = e.ClassID
+			// Урок подгруппы прикрепляется к строке родительского класса.
+			if p := subParentID(e.ClassID); p != 0 {
+				rowID = p
+				isSub = true
+			}
 		case "teacher":
 			rowID = e.TeacherID
 		case "room":
 			rowID = e.RoomID
 		}
 		if lookup[rowID] == nil {
-			lookup[rowID] = map[cellKey]cellInfo{}
+			lookup[rowID] = map[cellKey][]cellInfo{}
 		}
 		k := cellKey{e.DayOfWeek, e.Timeslot}
-		// Two entries in the same cell (a conflict) — keep the first one,
-		// but mark both as conflicts via the conflicts map above so the
-		// cell shows red.
-		if _, exists := lookup[rowID][k]; !exists {
-			lookup[rowID][k] = cellInfo{
-				subjectID: e.SubjectID,
-				teacherID: e.TeacherID,
-				roomID:    e.RoomID,
-				classID:   e.ClassID,
-				conflict:  conflicts[e.ID],
-			}
+		// Два урока в одной ячейке (конфликт или параллельные подгруппы):
+		// целоклассовый урок — первым, подгруппы — следом.
+		info := cellInfo{
+			subjectID: e.SubjectID,
+			teacherID: e.TeacherID,
+			roomID:    e.RoomID,
+			classID:   e.ClassID,
+			isSub:     isSub,
+			conflict:  conflicts[e.ID],
+		}
+		list := lookup[rowID][k]
+		if !info.isSub && len(list) > 0 && list[0].isSub {
+			lookup[rowID][k] = append([]cellInfo{info}, list...)
+		} else {
+			lookup[rowID][k] = append(list, info)
 		}
 	}
 
@@ -1027,16 +1065,36 @@ func (a *App) ExportPDF(schoolID int, optionsJSON string) (string, error) {
 				return pdf.Cell{}, false
 			}
 			info, ok := lookup[rowID][cellKey{day, slot}]
-			if !ok {
+			if !ok || len(info) == 0 {
 				return pdf.Cell{}, false
 			}
 			return pdf.Cell{
-				SubjectID: info.subjectID,
-				TeacherID: info.teacherID,
-				RoomID:    info.roomID,
-				ClassID:   info.classID,
-				Conflict:  info.conflict,
+				SubjectID: info[0].subjectID,
+				TeacherID: info[0].teacherID,
+				RoomID:    info[0].roomID,
+				ClassID:   info[0].classID,
+				Conflict:  info[0].conflict,
 			}, true
+		},
+		CellSubs: func(rowID, day, slot int) []pdf.Cell {
+			if lookup[rowID] == nil {
+				return nil
+			}
+			infos := lookup[rowID][cellKey{day, slot}]
+			if len(infos) < 2 {
+				return nil
+			}
+			var out []pdf.Cell
+			for _, ci := range infos[1:] {
+				out = append(out, pdf.Cell{
+					SubjectID: ci.subjectID,
+					TeacherID: ci.teacherID,
+					RoomID:    ci.roomID,
+					ClassID:   ci.classID,
+					Conflict:  ci.conflict,
+				})
+			}
+			return out
 		},
 		// Имя учителя в ячейке не нужно в режиме «по учителям» — там
 		// учитель и есть владелец страницы (ячейка показывает класс).

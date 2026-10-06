@@ -101,7 +101,21 @@ extern "C" ScheduleResult* ortools_solve(
     return v;
   };
 
-  // hard uniqueness: teacher / class at most one per (day,slot); room at most one per (day,slot,room)
+  // Подгруппы: child → parent (из student_group ограничений). Пары
+  // подгрупп одного родителя могут делить кабинет (половины класса).
+  std::map<int, int> subParent;
+  for (int ci = 0; ci < num_constraints; ++ci) {
+    if (constraints[ci].ctype == 9) {
+      subParent[constraints[ci].entity_id] = constraints[ci].value;
+    }
+  }
+  auto sameParentSubs = [&](int cls1, int cls2) -> bool {
+    auto p1 = subParent.find(cls1), p2 = subParent.find(cls2);
+    return p1 != subParent.end() && p2 != subParent.end() && p1->second == p2->second;
+  };
+
+
+    // hard uniqueness: teacher / class at most one per (day,slot); room at most one per (day,slot,room)
   for (int d = 0; d < D; ++d) {
     for (int s = 0; s < S; ++s) {
       for (const auto& kv : teacherOccs)
@@ -109,9 +123,17 @@ extern "C" ScheduleResult* ortools_solve(
       for (const auto& kv : classOccs)
         if (!kv.second.empty()) cp.AddAtMostOne(cellVars(kv.second, d, s));
       for (int r = 0; r < R; ++r) {
-        std::vector<BoolVar> rv;
-        for (int o = 0; o < O; ++o) rv.push_back(x[o][d][s][r]);
-        cp.AddAtMostOne(rv);
+        // Один кабинет на слот, НО подгруппы одного родителя могут
+        // заниматься в нём параллельно (половины класса вмещаются).
+        for (int o1 = 0; o1 < O; ++o1)
+          for (int o2 = o1 + 1; o2 < O; ++o2) {
+            if (occ[o1].cls == occ[o2].cls) continue; // тот же класс — уже покрыт
+            if (sameParentSubs(occ[o1].cls, occ[o2].cls)) continue; // половинки — можно
+            std::vector<BoolVar> pair;
+            pair.push_back(x[o1][d][s][r]);
+            pair.push_back(x[o2][d][s][r]);
+            cp.AddAtMostOne(pair);
+          }
       }
     }
   }
@@ -318,6 +340,12 @@ extern "C" ScheduleResult* ortools_solve(
           }
         }
       }
+    }
+    if (!found) {
+      // Перегруженная школа: урок не удалось разместить — помечаем
+      // days=-1, чтобы Go-сторона пропустила эту запись (иначе мусор
+      // из malloc попадал в результат и ломал FOREIGN KEY).
+      res->days[o] = -1;
     }
   }
   return res;

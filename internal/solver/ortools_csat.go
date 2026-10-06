@@ -156,7 +156,12 @@ func ortoolsSolve(in SolveInput, parallelism int, timeout time.Duration) (Result
 	slotArr := (*[1 << 30]C.int)(unsafe.Pointer(res.slots))[:n:n]
 
 	entries := make([]domain.ScheduleEntry, 0, n)
+	placed := 0
 	for i := 0; i < n; i++ {
+		if int(dayArr[i]) < 0 {
+			continue // урок не удалось разместить (перегруженная школа)
+		}
+		placed++
 		// bind.cpp reports the lesson *index* into in.Lessons, not the DB
 		// lesson ID — map it back here. A real ID is required for the
 		// schedule_entries foreign key.
@@ -180,5 +185,5 @@ func ortoolsSolve(in SolveInput, parallelism int, timeout time.Duration) (Result
 			Timeslot:  int(slotArr[i]),
 		})
 	}
-	return Result{Entries: entries, Placed: len(entries), Total: n, Violations: 0}, true
+	return Result{Entries: entries, Placed: placed, Total: n, Violations: 0}, true
 }

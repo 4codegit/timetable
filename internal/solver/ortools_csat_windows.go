@@ -194,7 +194,12 @@ func ortoolsSolve(in SolveInput, parallelism int, timeout time.Duration) (Result
 	slotArr := unsafe.Slice((*int32)(res.slots), n)
 
 	entries := make([]domain.ScheduleEntry, 0, n)
+	placed := 0
 	for i := 0; i < n; i++ {
+		if int(dayArr[i]) < 0 {
+			continue // урок не удалось разместить (перегруженная школа)
+		}
+		placed++
 		// When no rooms are defined the solver outputs room_id=0 which
 		// does not exist in the database — skip to avoid FK constraint error.
 		if len(in.Rooms) == 0 && int(roomIDsOut[i]) == 0 {
@@ -202,7 +207,7 @@ func ortoolsSolve(in SolveInput, parallelism int, timeout time.Duration) (Result
 		}
 		entries = append(entries, domain.ScheduleEntry{
 			SchoolID:  in.SchoolID,
-			LessonID:  int(lessonIDs[i]),
+			LessonID:  in.Lessons[int(lessonIDs[i])].ID,
 			ClassID:   int(classIDs[i]),
 			TeacherID: int(teacherIDs[i]),
 			SubjectID: int(subjectIDs[i]),
@@ -211,7 +216,7 @@ func ortoolsSolve(in SolveInput, parallelism int, timeout time.Duration) (Result
 			Timeslot:  int(slotArr[i]),
 		})
 	}
-	return Result{Entries: entries, Placed: len(entries), Total: n, Violations: 0}, true
+	return Result{Entries: entries, Placed: placed, Total: n, Violations: 0}, true
 }
 
 func maxInt(a, b int) int {

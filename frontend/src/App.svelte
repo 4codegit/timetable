@@ -270,25 +270,65 @@
         }
         function computeConflictIDs(schedule, constraints) {
                 const ids = new Set();
-                // Конфликт = два урока с ОДНИМ И ТЕМ ЖЕ учителем/классом/
-                // кабинетом в одно время. Группируем по (значение поля,
-                // день, слот): 9 разных классов в одном слоте — это норма,
-                // а не накладка (старый детектор красил всю школу).
-                const maps = { teacher_id: {}, class_id: {}, room_id: {} };
+                // Учитель/кабинет: группируем по (значение, день, слот).
+                const maps = { teacher_id: {}, room_id: {}, class_pairs: {} };
                 for (const e of schedule) {
                         const k = e.day_of_week * 1000 + e.timeslot;
-                        for (const f of ["teacher_id", "class_id", "room_id"]) {
-                                const v = e[f];
-                                if (!v) continue; // пустой кабинет/учитель не конфликтует
-                                if (!maps[f][v]) maps[f][v] = {};
-                                if (!maps[f][v][k]) maps[f][v][k] = [];
-                                maps[f][v][k].push(e.id);
+                        const tv = e.teacher_id, rv = e.room_id;
+                        if (tv) {
+                                if (!maps.teacher_id[tv]) maps.teacher_id[tv] = {};
+                                if (!maps.teacher_id[tv][k]) maps.teacher_id[tv][k] = [];
+                                maps.teacher_id[tv][k].push(e.id);
                         }
+                        if (rv) {
+                                if (!maps.room_id[rv]) maps.room_id[rv] = {};
+                                if (!maps.room_id[rv][k]) maps.room_id[rv][k] = [];
+                                maps.room_id[rv][k].push(e.id);
+                        }
+                        // Класс: пары уроков в одном слоте — конфликт, если
+                        // тела пересекаются (целый класс vs его подгруппа);
+                        // две подгруппы одного родителя disjoint — можно параллельно.
+                        const ck = e.day_of_week + ":" + e.timeslot;
+                        (maps.class_pairs[ck] = maps.class_pairs[ck] || []).push(e);
                 }
-                for (const f in maps) {
+                for (const f of ["teacher_id"]) {
                         for (const v in maps[f]) {
                                 for (const k in maps[f][v]) {
                                         if (maps[f][v][k].length > 1) maps[f][v][k].forEach((id) => ids.add(id));
+                                }
+                        }
+                }
+                // Кабинет: попарно; уроки одной семьи класса (родитель +
+                // его подгруппы) могут делить кабинет — половины класса вмещаются
+                for (const rv in maps.room_id) {
+                        const arr = maps.room_id[rv];
+                        for (let i = 0; i < arr.length; i++) {
+                                for (let j = i + 1; j < arr.length; j++) {
+                                        const a = arr[i], b = arr[j];
+                                        const famA = classBody(a.class_id), famB = classBody(b.class_id);
+                                        const sameFamily = famA.includes(b.class_id) || famB.includes(a.class_id);
+                                        if (!sameFamily) {
+                                                ids.add(a.id); ids.add(b.id);
+                                        }
+                                }
+                        }
+                }
+                for (const ck in maps.class_pairs) {
+                        const arr = maps.class_pairs[ck];
+                        for (let i = 0; i < arr.length; i++) {
+                                for (let j = i + 1; j < arr.length; j++) {
+                                        const a = arr[i], b = arr[j];
+                                        if (a.class_id === b.class_id) {
+                                                ids.add(a.id); ids.add(b.id);
+                                                continue;
+                                        }
+                                        const ba = classBody(a.class_id), bb = classBody(b.class_id);
+                                        const inter = ba.some((x) => bb.includes(x));
+                                        const bothSub = subParentOf(a.class_id) && subParentOf(b.class_id) &&
+                                                subParentOf(a.class_id) === subParentOf(b.class_id);
+                                        if (inter && !bothSub) {
+                                                ids.add(a.id); ids.add(b.id);
+                                        }
                                 }
                         }
                 }
@@ -302,35 +342,87 @@
 
         let report = { conflicts: [], unplaced: [], overloads: [] };
         function computeConflictReport() {
-                // Та же группировка, что и в computeConflictIDs: по значению
-                // поля (учитель/класс/кабинет) + время.
+                // Та же логика: учитель/кабинет по значению, классы —
+                // попарным пересечением тел (целый класс vs подгруппа).
                 const byKey = { teacher_id: {}, class_id: {}, room_id: {} };
                 for (const e of schedule) {
                         const key = e.day_of_week * 1000 + e.timeslot;
-                        for (const f of ["teacher_id", "class_id", "room_id"]) {
+                        for (const f of ["teacher_id", "room_id"]) {
                                 const v = e[f];
                                 if (!v) continue;
                                 (byKey[f][v + ":" + key] = byKey[f][v + ":" + key] || []).push(e);
                         }
+                        const rv = e.room_id;
+                        if (rv) (byKey.room_id[rv + ":" + key] = byKey.room_id[rv + ":" + key] || []).push(e);
                 }
                 const labels = { teacher_id: "Учитель", class_id: "Класс", room_id: "Кабинет" };
                 const conflicts = [];
-                for (const f of ["teacher_id", "class_id", "room_id"]) {
-                        for (const key in byKey[f]) {
-                                const arr = byKey[f][key];
-                                if (arr.length > 1) {
-                                        // key = "значение:день*1000+слот"
-                                        const kk = Number(key.split(":")[1]);
-                                        const day = Math.floor(kk / 1000), slot = kk % 1000;
-                                        conflicts.push({
-                                                type: labels[f], day, slot,
-                                                items: arr.map((e) => ({
-                                                        subject: subjName(subjects, e.subject_id),
-                                                        who: f === "teacher_id" ? teachName(teachers, e.teacher_id)
-                                                                : f === "class_id" ? className(classes, e.class_id)
-                                                                : (rooms.find((r) => r.id === e.room_id)?.name || "?")
-                                                }))
-                                        });
+                // Классы: попарное пересечение тел (не две подгруппы одного родителя)
+                const bodyOf = (cid) => {
+                        const b = [cid];
+                        for (const c of classes) if (c.subgroup_of === cid) b.push(c.id);
+                        return b;
+                };
+                // Учитель: группировка по значению
+                for (const key in byKey.teacher_id) {
+                        const arr = byKey.teacher_id[key];
+                        if (arr.length > 1) {
+                                const kk = Number(key.split(":")[1]);
+                                const day = Math.floor(kk / 1000), slot = kk % 1000;
+                                conflicts.push({
+                                        type: "Учитель", day, slot,
+                                        items: arr.map((e) => ({
+                                                subject: subjName(subjects, e.subject_id),
+                                                who: teachName(teachers, e.teacher_id)
+                                        }))
+                                });
+                        }
+                }
+                // Кабинет: попарно; одна семья класса делит кабинет законно
+                for (const key in byKey.room_id) {
+                        const arr = byKey.room_id[key];
+                        for (let i = 0; i < arr.length; i++) {
+                                for (let j = i + 1; j < arr.length; j++) {
+                                        const a = arr[i], b = arr[j];
+                                        const famA = classBody(a.class_id), famB = classBody(b.class_id);
+                                        const sameFamily = famA.includes(b.class_id) || famB.includes(a.class_id);
+                                        if (!sameFamily) {
+                                                const kk = Number(key.split(":")[1]);
+                                                const day = Math.floor(kk / 1000), slot = kk % 1000;
+                                                conflicts.push({
+                                                        type: "Кабинет", day, slot,
+                                                        items: [
+                                                                { subject: subjName(subjects, a.subject_id), who: (rooms.find((r) => r.id === a.room_id)?.name || "?") },
+                                                                { subject: subjName(subjects, b.subject_id), who: (rooms.find((r) => r.id === b.room_id)?.name || "?") }
+                                                        ]
+                                                });
+                                        }
+                                }
+                        }
+                }
+                // Классы: попарное пересечение тел (целый класс vs его подгруппа);
+                // две подгруппы одного родителя — параллельно можно.
+                for (const key in byKey.class_id) {
+                        const arr = byKey.class_id[key];
+                        if (arr.length < 2) continue;
+                        const kk = Number(key.split(":")[1]);
+                        const day = Math.floor(kk / 1000), slot = kk % 1000;
+                        for (let i = 0; i < arr.length; i++) {
+                                for (let j = i + 1; j < arr.length; j++) {
+                                        const a = arr[i], b = arr[j];
+                                        if (a.class_id === b.class_id) continue;
+                                        const inter = bodyOf(a.class_id).some((x) => bodyOf(b.class_id).includes(x));
+                                        const bothSub = subParentOf(a.class_id) && subParentOf(b.class_id) &&
+                                                subParentOf(a.class_id) === subParentOf(b.class_id);
+                                        if (inter && !bothSub) {
+                                                conflicts.push({
+                                                        type: "Класс", day, slot,
+                                                        items: [
+                                                                { subject: subjName(subjects, a.subject_id), who: className(classes, a.class_id) },
+                                                                { subject: subjName(subjects, b.subject_id), who: className(classes, b.class_id) }
+                                                        ]
+                                                });
+                                        }
                                 }
                         }
                 }
@@ -484,19 +576,37 @@
                 }
                 // Source's own row identifier (its class/teacher/room id).
                 const srcRowId = kind === "class" ? src.class_id : kind === "teacher" ? src.teacher_id : src.room_id;
-                if (srcRowId !== rowId) {
+                // Подгруппа может двигаться в строке своего родительского класса.
+                const srcParent = kind === "class" ? subParentOf(srcRowId) : null;
+                if (srcRowId !== rowId && srcParent !== rowId) {
                         const rowKindLabel = kind === "class" ? "классами" : kind === "teacher" ? "учителями" : "кабинетами";
                         flash(`⚠ Нельзя перемещать урок между ${rowKindLabel} (это нарушило бы структуру расписания). Только в пределах одной строки.`);
                         return;
                 }
                 // Find target in same row at the destination cell.
+                // Для подгруппы: цель — любой урок этой строки в целевой ячейке
+                // (другая подгруппа → обмен; целый класс → запрещено ниже).
                 const target = schedule.find(en => {
                         if (en.id === id) return false;
                         if (en.day_of_week !== day || en.timeslot !== slot) return false;
-                        if (kind === "class") return en.class_id === rowId;
+                        if (kind === "class") return en.class_id === rowId || subParentOf(en.class_id) === rowId;
                         if (kind === "teacher") return en.teacher_id === rowId;
                         return en.room_id === rowId;
                 });
+                // Целоклассовый урок не встаёт на подгруппы и наоборот:
+                const srcIsSub = kind === "class" && subParentOf(src.class_id) === rowId;
+                const tgtWhole = target && target.class_id === rowId;
+                const tgtSubs = target && target.class_id !== rowId && subParentOf(target.class_id) === rowId;
+                if (kind === "class") {
+                        if (!srcIsSub && tgtSubs) {
+                                flash("⚠ В это время занимаются подгруппы — вставьте урок в свободную ячейку.");
+                                return;
+                        }
+                        if (srcIsSub && tgtWhole) {
+                                flash("⚠ В это время урок всего класса — выберите свободную ячейку.");
+                                return;
+                        }
+                }
 
                 // Snapshot for rollback if the backend rejects the change.
                 const snapshot = schedule.slice();
@@ -740,6 +850,30 @@
                 window.removeEventListener("keydown", onGlobalKeydown, true);
         }
         onMount(() => { attachDragListeners(); detectPreciseSolver(); return () => detachDragListeners(); });
+        // cellSubs: остальные уроки в той же ячейке (параллельные подгруппы).
+        function cellSubs(kind, id, day, slot) {
+                const out = [];
+                const kids = kind === "class" ? classes.filter((c) => c.subgroup_of === id).map((c) => c.id) : [];
+                for (const en of schedule) {
+                        const match =
+                                (kind === "teacher" ? en.teacher_id === id : kind === "room" ? en.room_id === id : false) ||
+                                (kind === "class" && (en.class_id === id || kids.includes(en.class_id)));
+                        if (match && en.day_of_week === day && en.timeslot === slot && (!cellAt(kind, id, day, slot) || en.id !== cellAt(kind, id, day, slot).id)) {
+                                out.push(en);
+                        }
+                }
+                return out;
+        }
+        // Тело класса: сам класс + его подгруппы.
+        function classBody(classId) {
+                const body = [classId];
+                for (const c of classes) if (c.subgroup_of === classId) body.push(c.id);
+                return body;
+        }
+        function subParentOf(classId) {
+                const c = classes.find((x) => x.id === classId);
+                return c?.subgroup_of || null;
+        }
         function cellAt(kind, id, day, slot) {
                 const e = schedule.find((en) => {
                         let match;
@@ -1321,7 +1455,7 @@
                                                                                                         data-slot={si}
                                                                                                         data-row={row.id}
                                                                                                         data-kind={kind}
-                                                                                                        on:pointerdown={(e) => onPointerDown(e, cell, kind, row.id, activeDayIdx[di], si)}>{#if cell}<div class="chip" class:conflict={cell.conflict} style="background:{cell.conflict ? '#dc2626' : subjectColor(cell.subject_id)}"><b>{subjName(subjects, cell.subject_id)}</b>{#if pdfShowTeacher}<span>{teachName(teachers, cell.teacher_id)}</span>{/if}{#if pdfShowRoom && cell.room_id}<span>{rooms.find((r) => r.id === cell.room_id)?.name || ""}</span>{/if}</div><button class="cell-x" title="Удалить" on:click={(e) => { e.stopPropagation(); removeEntry(cell.id); }}>✕</button>{/if}</td>{/each}</tr>
+                                                                                                        on:pointerdown={(e) => onPointerDown(e, cell, kind, row.id, activeDayIdx[di], si)}>{#if cell}<div class="chip" class:conflict={cell.conflict} style="background:{cell.conflict ? '#dc2626' : subjectColor(cell.subject_id)}"><b>{subjName(subjects, cell.subject_id)}</b>{#if pdfShowTeacher}<span>{teachName(teachers, cell.teacher_id)}</span>{/if}{#if pdfShowRoom && cell.room_id}<span>{rooms.find((r) => r.id === cell.room_id)?.name || ""}</span>{/if}</div><button class="cell-x" title="Удалить" on:click={(e) => { e.stopPropagation(); removeEntry(cell.id); }}>✕</button>{:else}{#each cellSubs(kind, row.id, activeDayIdx[di], si) as sc}<div class="chip half" class:conflict={conflictIDs.has(sc.id)} style="background:{conflictIDs.has(sc.id) ? '#dc2626' : subjectColor(sc.subject_id)}" title="Подгруппа {classes.find((c) => c.id === sc.class_id)?.name || ''}" on:pointerdown={(e) => { e.stopPropagation(); onPointerDown(e, cellAt("class", sc.class_id, activeDayIdx[di], si), "class", row.id, activeDayIdx[di], si); }}><b>{subjName(subjects, sc.subject_id)}</b>{#if pdfShowTeacher}<span>{teachName(teachers, sc.teacher_id)}</span>{/if}</div>{/each}{/if}</td>{/each}</tr>
                                                                                         {/each}
                                                                                 </tbody>
                                                                         </table>
@@ -1597,6 +1731,10 @@
         /* Подгруппа: бейдж + акцентная полоса слева на карточке */
         .sub-badge { background: #ede9fe; color: #6d28d9; font-size: 9px; font-weight: 700; padding: 1px 7px; border-radius: 6px; margin-left: 6px; vertical-align: 1px; white-space: nowrap; }
         .mini.is-sub, .class-block.is-sub { border-left: 3px solid #8b5cf6; }
+        /* Половинки разделённой ячейки (параллельные подгруппы) */
+        .chip.half { height: 50%; margin: 1px 2px; font-size: 9.5px; }
+        .chip.half b { font-size: 9.5px; }
+        .chip.half span { font-size: 8px; }
         .mini .mini-title:hover { text-decoration: underline; }
         .mini th.d, .mini td.day { width: 34px; }
         .overview { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 14px; align-items: start; }

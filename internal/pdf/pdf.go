@@ -75,6 +75,12 @@ type Options struct {
 	// Lookup of a cell by (rowID, day, slot) -> Cell. Return ok=false for empty.
 	CellAt func(rowID, day, slot int) (Cell, bool)
 
+	// CellSubs returns ADDITIONAL lessons in the same cell — parallel
+	// subgroups of the class (или параллельные подгруппы у учителя).
+	// Ячейка печатается разделённой на полосы по числу уроков.
+	// Nil = ячейки всегда одиночные.
+	CellSubs func(rowID, day, slot int) []Cell
+
 	// Display flags (mirror the frontend checkboxes).
 	ShowTeacher  bool
 	ShowRoom     bool

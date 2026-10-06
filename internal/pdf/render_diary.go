@@ -51,8 +51,30 @@ func drawASCPrintTable(pdf *gopdf.GoPdf, opts Options, row Row, x0, y0, dayColW,
 		})
 		for si := 0; si < slots; si++ {
 			cell, ok := opts.CellAt(row.ID, di, si)
-			drawASCPrintCell(pdf, opts, cell, ok,
-				x0+dayColW+float64(si)*colW, y, colW, rowH, black, dark, mid)
+			subs := []Cell{}
+			if opts.CellSubs != nil {
+				subs = opts.CellSubs(row.ID, di, si)
+			}
+			cx := x0 + dayColW + float64(si)*colW
+			// Разделённая ячейка: полосы по числу уроков — целоклассовый
+			// урок первой полосой, подгруппы следом (стиль aSc).
+			bands := 1
+			if ok || len(subs) > 0 {
+				bands = 1 + len(subs)
+			}
+			bandH := rowH / float64(bands)
+			if ok {
+				drawASCPrintCell(pdf, opts, cell, true, cx, y, colW, bandH, black, dark, mid)
+			} else {
+				ascFillRect(pdf, cx, y, colW, bandH, "#ffffff", black, 0.30)
+			}
+			for bi, sc := range subs {
+				drawASCPrintCell(pdf, opts, sc, true,
+					cx, y+float64(bi+1)*bandH, colW, bandH, black, dark, mid)
+			}
+			for bi := 1; bi < bands; bi++ {
+				ascHLine(pdf, cx, cx+colW, y+float64(bi)*bandH, black, 0.30)
+			}
 		}
 	}
 
