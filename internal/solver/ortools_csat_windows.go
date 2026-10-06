@@ -69,6 +69,7 @@ func ortoolsSolve(in SolveInput, parallelism int, timeout time.Duration) (Result
 		return Result{}, false
 	}
 
+	in = appendStudentGroupConstraints(in)
 	in, cfgDays := prepareDaysMask(in)
 	days := int32(cfgDays)
 	if days <= 0 {

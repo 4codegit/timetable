@@ -26,6 +26,7 @@ func init() {
 // (Примечание: при изменении bind.cpp форсируйте пересборку этого файла —
 // go build не отслеживает bind.o как зависимость пакета.)
 func ortoolsSolve(in SolveInput, parallelism int, timeout time.Duration) (Result, bool) {
+	in = appendStudentGroupConstraints(in)
 	in, cfgDays := prepareDaysMask(in)
 	days := cfgDays
 	if days <= 0 {

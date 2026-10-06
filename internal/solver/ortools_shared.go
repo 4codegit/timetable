@@ -2,6 +2,10 @@
 
 package solver
 
+import (
+	"timetable/internal/domain"
+)
+
 func constraintTypeCode(t string) int {
 	switch t {
 	case "teacher_unavailable":
@@ -22,8 +26,42 @@ func constraintTypeCode(t string) int {
 		return 7
 	case "max_gaps":
 		return 8
+	case "student_group":
+		return 9
 	}
 	return -1
+}
+
+// appendStudentGroupConstraints добавляет синтетические жёсткие
+// ограничения student_group: подгруппа (entity_id) не может пересекаться
+// по времени с уроком родительского класса (value). Две подгруппы одного
+// родителя при этом МОГУТ идти параллельно с разными учителями.
+func appendStudentGroupConstraints(in SolveInput) SolveInput {
+	groups := map[int][]int{}
+	for _, c := range in.Classes {
+		if c.SubgroupOf != nil {
+			if _, ok := in.Classes[*c.SubgroupOf]; ok {
+				groups[*c.SubgroupOf] = append(groups[*c.SubgroupOf], c.ID)
+			}
+		}
+	}
+	if len(groups) == 0 {
+		return in
+	}
+	out := in
+	out.Constraints = append([]domain.Constraint(nil), in.Constraints...)
+	for parent, kids := range groups {
+		for _, kid := range kids {
+			out.Constraints = append(out.Constraints, domain.Constraint{
+				Type:       "student_group",
+				EntityType: "class",
+				EntityID:   kid,
+				Weight:     parent,
+				IsHard:     true,
+			})
+		}
+	}
+	return out
 }
 
 func entityTypeCode(t string) int {

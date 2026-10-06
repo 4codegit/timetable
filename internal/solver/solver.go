@@ -194,7 +194,8 @@ func backtrackDl(in SolveInput, occ []Occurrence, hard HardSet, days, slots int,
 		roomBusy[r.ID] = newGrid(days, slots)
 	}
 
-	ss := buildStudentSets(in.Classes)
+	bodies := buildStudentBodies(in.Classes)
+	classSetsMap := buildClassSets(in.Classes)
 
 	teacherMaxCons, classMaxCons := map[int]int{}, map[int]int{}
 	teacherMaxDay, classMaxDay := map[int]int{}, map[int]int{}
@@ -246,7 +247,7 @@ func backtrackDl(in SolveInput, occ []Occurrence, hard HardSet, days, slots int,
 		}
 		if k == len(order) {
 			entries := buildEntries(in, assign, occ)
-			if !validateAggregates(in, ss, entries, days, slots) {
+			if !validateAggregates(in, bodies, entries, days, slots) {
 				return false
 			}
 			sol := make([]cell, len(assign))
@@ -257,8 +258,8 @@ func backtrackDl(in SolveInput, occ []Occurrence, hard HardSet, days, slots int,
 		}
 		oi := order[k]
 		o := occ[oi]
-		cset := ss[o.Lesson.ClassID]
-		cands := candidateCells(o, hard, days, slots, classBusy, cset, roomBusy)
+		cs := classSetsMap[o.Lesson.ClassID]
+		cands := candidateCells(o, hard, days, slots, classBusy, cs.check, roomBusy)
 		shuffle(cands, rng)
 		tID := o.Lesson.TeacherID
 		cID := o.Lesson.ClassID
@@ -270,7 +271,7 @@ func backtrackDl(in SolveInput, occ []Occurrence, hard HardSet, days, slots int,
 			if teacherBusy[tID][cc.day][cc.slot] {
 				continue
 			}
-			if !classFree(cset, classBusy, cc.day, cc.slot) {
+			if !classFree(cs.check, classBusy, cc.day, cc.slot) {
 				continue
 			}
 			if roomBusy[cc.room][cc.day][cc.slot] {
@@ -289,7 +290,7 @@ func backtrackDl(in SolveInput, occ []Occurrence, hard HardSet, days, slots int,
 				continue
 			}
 			teacherBusy[tID][cc.day][cc.slot] = true
-			for _, cid := range cset {
+			for _, cid := range cs.mark {
 				classBusy[cid][cc.day][cc.slot] = true
 			}
 			roomBusy[cc.room][cc.day][cc.slot] = true
@@ -306,7 +307,7 @@ func backtrackDl(in SolveInput, occ []Occurrence, hard HardSet, days, slots int,
 				return false
 			}
 			teacherBusy[tID][cc.day][cc.slot] = false
-			for _, cid := range cset {
+			for _, cid := range cs.mark {
 				classBusy[cid][cc.day][cc.slot] = false
 			}
 			roomBusy[cc.room][cc.day][cc.slot] = false
@@ -426,8 +427,14 @@ func buildHard(in SolveInput, days, slots int) HardSet {
 		if target[c.EntityID] == nil {
 			target[c.EntityID] = map[int]bool{}
 		}
+		te := ts
+		if c.TimeslotEnd != nil {
+			te = *c.TimeslotEnd
+		}
 		if dow >= 0 && ts >= 0 {
-			target[c.EntityID][dow*1000+ts] = true
+			for sl := ts; sl <= te && sl < slots; sl++ {
+				target[c.EntityID][dow*1000+sl] = true
+			}
 		} else if dow >= 0 {
 			for s := 0; s < slots; s++ {
 				target[c.EntityID][dow*1000+s] = true
@@ -601,9 +608,10 @@ func shuffle(c []cell, rng *rand.Rand) {
 	rng.Shuffle(len(c), func(i, j int) { c[i], c[j] = c[j], c[i] })
 }
 
-// buildStudentSets returns, for each class, the set of class ids whose student bodies overlap.
-// A parent class shares students with all its subgroups; two subgroups of the same parent are disjoint.
-func buildStudentSets(classes map[int]domain.SchoolClass) map[int][]int {
+// buildStudentBodies returns, for each class, the set of class ids whose
+// student bodies overlap: у родителя тело включает подгруппы, у подгруппы —
+// только она сама (две подгруппы одного родителя disjoint).
+func buildStudentBodies(classes map[int]domain.SchoolClass) map[int][]int {  // lint: keep
 	children := map[int][]int{}
 	for id, c := range classes {
 		if c.SubgroupOf != nil {
@@ -617,6 +625,42 @@ func buildStudentSets(classes map[int]domain.SchoolClass) map[int][]int {
 			set = append(set, subs...)
 		}
 		res[id] = set
+	}
+	return res
+}
+
+// classSets — наборы для размещения урока класса:
+// check — чью занятость проверяем, mark — чью помечаем после установки.
+// Родитель: проверяет и занимает себя + подгруппы (пересечение запрещено).
+// Подгруппа: проверяет себя И родителя, занимает ТОЛЬКО себя — поэтому
+// две подгруппы одного класса могут идти параллельно с двумя учителями.
+type classSets struct {
+	check []int
+	mark  []int
+}
+
+func buildClassSets(classes map[int]domain.SchoolClass) map[int]classSets {
+	children := map[int][]int{}
+	parentOf := map[int]int{}
+	for id, c := range classes {
+		if c.SubgroupOf != nil {
+			if _, ok := classes[*c.SubgroupOf]; ok {
+				children[*c.SubgroupOf] = append(children[*c.SubgroupOf], id)
+				parentOf[id] = *c.SubgroupOf
+			}
+		}
+	}
+	res := map[int]classSets{}
+	for id := range classes {
+		cs := classSets{check: []int{id}, mark: []int{id}}
+		if subs, ok := children[id]; ok {
+			cs.check = append(cs.check, subs...)
+			cs.mark = append(cs.mark, subs...)
+		}
+		if p, ok := parentOf[id]; ok {
+			cs.check = append(cs.check, p)
+		}
+		res[id] = cs
 	}
 	return res
 }
@@ -665,13 +709,13 @@ func buildEntries(in SolveInput, assign []cell, occ []Occurrence) []domain.Sched
 }
 
 // validateAggregates checks day-level hard constraints that cannot be enforced incrementally.
-func validateAggregates(in SolveInput, ss map[int][]int, entries []domain.ScheduleEntry, days, slots int) bool {
+func validateAggregates(in SolveInput, bodies map[int][]int, entries []domain.ScheduleEntry, days, slots int) bool {
 	for _, c := range in.Constraints {
 		if !c.IsHard {
 			continue
 		}
 		if c.Type == "lunch_break" {
-			if !lunchOK(in, ss, c, entries, days, slots) {
+			if !lunchOK(in, bodies, c, entries, days, slots) {
 				return false
 			}
 		}
@@ -679,7 +723,7 @@ func validateAggregates(in SolveInput, ss map[int][]int, entries []domain.Schedu
 	return true
 }
 
-func lunchOK(in SolveInput, ss map[int][]int, c domain.Constraint, entries []domain.ScheduleEntry, days, slots int) bool {
+func lunchOK(in SolveInput, bodies map[int][]int, c domain.Constraint, entries []domain.ScheduleEntry, days, slots int) bool {
 	occ := make([][]bool, days)
 	for d := range occ {
 		occ[d] = make([]bool, slots)
@@ -692,7 +736,7 @@ func lunchOK(in SolveInput, ss map[int][]int, c domain.Constraint, entries []dom
 		case "teacher":
 			inEnt = e.TeacherID == c.EntityID
 		case "class":
-			inEnt = sharesStudent(ss, c.EntityID, e.ClassID)
+			inEnt = sharesStudent(bodies, c.EntityID, e.ClassID)
 		}
 		if inEnt && e.DayOfWeek < days && e.Timeslot < slots {
 			occ[e.DayOfWeek][e.Timeslot] = true
@@ -723,12 +767,12 @@ func lunchOK(in SolveInput, ss map[int][]int, c domain.Constraint, entries []dom
 	return true
 }
 
-func sharesStudent(ss map[int][]int, a, b int) bool {
-	sa := ss[a]
+func sharesStudent(bodies map[int][]int, a, b int) bool {
+	sa := bodies[a]
 	if sa == nil {
 		sa = []int{a}
 	}
-	sb := ss[b]
+	sb := bodies[b]
 	if sb == nil {
 		sb = []int{b}
 	}

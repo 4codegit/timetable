@@ -110,11 +110,26 @@
         let viewMode = "school";
         $: kind = viewMode === "school" ? "class" : viewMode;
         $: overviewMode = viewMode === "school";
+        // Порядок строк классов: родитель, сразу за ним его подгруппы.
+        function orderClasses(list) {
+                const kids = {};
+                list.forEach((c) => {
+                        if (c.subgroup_of) (kids[c.subgroup_of] = kids[c.subgroup_of] || []).push(c);
+                });
+                const out = [];
+                for (const c of list) {
+                        if (c.subgroup_of) continue;
+                        out.push(c);
+                        (kids[c.id] || []).sort((a, b) => String(a.label).localeCompare(String(b.label))).forEach((s) => out.push(s));
+                }
+                for (const c of list) if (!out.includes(c)) out.push(c);
+                return out;
+        }
         $: rows = kind === "teacher"
                 ? teachers.map((t) => ({ id: t.id, label: t.name }))
                 : kind === "room"
                 ? rooms.map((r) => ({ id: r.id, label: r.name }))
-                : classes.map((c) => ({ id: c.id, label: c.name }));
+                : orderClasses(classes.map((c) => ({ id: c.id, label: c.name, subgroup_of: c.subgroup_of })));
 
         // PDF следует выбранному «Виду» на экране — что видите, то и в файле.
         $: exportMode = viewMode;
@@ -746,6 +761,16 @@
 
         // Компактная подпись для обзора «вся школа»: краткое имя предмета
         // (short_name, если задан) — полный контекст в подсказке ячейки.
+        function isSubRow(id) {
+                const c = classes.find((x) => x.id === id);
+                return !!(c && c.subgroup_of);
+        }
+        // Имя родителя, если класс — подгруппа.
+        function subParentName(id) {
+                const c = classes.find((x) => x.id === id);
+                if (!c || !c.subgroup_of) return null;
+                return classes.find((x) => x.id === c.subgroup_of)?.name || null;
+        }
         function subjShort(list, id) {
                 const s = list.find((x) => x.id === id);
                 if (!s) return "?";
@@ -1254,8 +1279,8 @@
                                                 {#if overviewMode}
                                                         <div class="overview">
                                                                 {#each grid as row (row.id)}
-                                                                        <div class="mini">
-                                                                                <button class="mini-title" on:click={() => focusRow(row.id)} title="Открыть этот класс отдельно">{row.label}</button>
+                                                                        <div class="mini" class:is-sub={isSubRow(row.id)}>
+                                                                                <button class="mini-title" on:click={() => focusRow(row.id)} title="Открыть этот класс отдельно">{row.label}{#if subParentName(row.id)}<span class="sub-badge">подгруппа {subParentName(row.id)}</span>{/if}</button>
                                                                                 <table>
                                                                                         <thead><tr><th class="d"></th>{#each Array(slots) as _, si}<th>П{si + 1}</th>{/each}</tr></thead>
                                                                                         <tbody>
@@ -1280,8 +1305,8 @@
                                                 {:else}
                                                 <div class="grid-scroll">
                                                         {#each grid as row (row.id)}
-                                                                <div class="class-block" class:compact>
-                                                                        <h3>{row.label}</h3>
+                                                                <div class="class-block" class:compact class:is-sub={isSubRow(row.id)}>
+                                                                        <h3>{row.label} {#if subParentName(row.id)}<span class="sub-badge">подгруппа {subParentName(row.id)}</span>{/if}</h3>
                                                                         <table class:compact>
                                                                                 <thead><tr><th class="day-h">День</th>{#each Array(slots) as _, si}<th>П{si + 1}{#if periodLabel(si)}<span class="tm">{periodLabel(si)}</span>{/if}</th>{/each}</tr></thead>
                                                                                 <tbody>
@@ -1569,6 +1594,9 @@
         .class-block.compact h3 { font-size: 11px; margin: 0 0 4px; }
         .mini { border: 1px solid #e5e9f0; border-radius: 12px; padding: 10px; background: #fff; min-width: 0; box-shadow: 0 1px 3px rgba(15, 23, 42, 0.06); }
         .mini .mini-title { display: block; background: none; border: none; padding: 0; margin: 0 0 8px; font-family: inherit; font-size: 13.5px; font-weight: 800; color: #1d4ed8; cursor: pointer; text-align: left; }
+        /* Подгруппа: бейдж + акцентная полоса слева на карточке */
+        .sub-badge { background: #ede9fe; color: #6d28d9; font-size: 9px; font-weight: 700; padding: 1px 7px; border-radius: 6px; margin-left: 6px; vertical-align: 1px; white-space: nowrap; }
+        .mini.is-sub, .class-block.is-sub { border-left: 3px solid #8b5cf6; }
         .mini .mini-title:hover { text-decoration: underline; }
         .mini th.d, .mini td.day { width: 34px; }
         .overview { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 14px; align-items: start; }
