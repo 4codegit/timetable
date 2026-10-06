@@ -3,6 +3,7 @@ package solver
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"math/rand"
 	"sort"
 	"sync"
@@ -173,13 +174,67 @@ func backtrack(in SolveInput, occ []Occurrence, hard HardSet, days, slots int, r
 // лучшее найденное к этому моменту.
 func backtrackDl(in SolveInput, occ []Occurrence, hard HardSet, days, slots int, rng *rand.Rand, deadline time.Time) Result {
 	// Order occurrences: most constrained first (fewest room choices).
-	order := make([]int, len(occ))
-	for i := range occ {
-		order[i] = i
+	// Делёные пары: половинка ставится СРАЗУ после своей базы —
+	// параллельно с ней (в один слот).
+	order := make([]int, 0, len(occ))
+	halfOfLesson := map[int]int{} // id урока-половинки → id базового урока
+	byKey := map[string]int{}
+	for _, l := range in.Lessons {
+		if p := subParentOfClass(in.Classes, l.ClassID); p != 0 {
+			key := fmt.Sprintf("%d:%d", p, l.SubjectID)
+			if base, ok := byKey[key]; ok {
+				halfOfLesson[l.ID] = base
+			} else {
+				byKey[key] = l.ID
+			}
+		}
 	}
-	sort.SliceStable(order, func(a, b int) bool {
-		return len(occ[order[a]].RoomChoices) < len(occ[order[b]].RoomChoices)
+	placed := make([]bool, len(occ))
+	// индекс occurrence → id урока
+	occLesson := make([]int, len(occ))
+	for i, o := range occ {
+		occLesson[i] = o.Lesson.ID
+	}
+	baseOfOcc := map[int]int{} // occ index → occ index базы
+	for i := range occ {
+		if base, ok := halfOfLesson[occLesson[i]]; ok {
+			for j := range occ {
+				if j != i && occLesson[j] == base {
+					baseOfOcc[i] = j
+				}
+			}
+		}
+	}
+	all := make([]int, len(occ))
+	for i := range all {
+		all[i] = i
+	}
+	sort.SliceStable(all, func(a, b int) bool {
+		return len(occ[all[a]].RoomChoices) < len(occ[all[b]].RoomChoices)
 	})
+	for _, i := range all {
+		if placed[i] {
+			continue
+		}
+		if _, isHalf := baseOfOcc[i]; isHalf {
+			continue // половинки — во втором проходе, после баз
+		}
+		order = append(order, i)
+		placed[i] = true
+		// сразу за базой — её половинки
+		for _, j := range all {
+			if !placed[j] && baseOfOcc[j] == i {
+				order = append(order, j)
+				placed[j] = true
+			}
+		}
+	}
+	for _, i := range all {
+		if !placed[i] {
+			order = append(order, i)
+			placed[i] = true
+		}
+	}
 
 	teacherBusy := map[int][][]bool{}
 	classBusy := map[int][][]int{}
@@ -195,6 +250,8 @@ func backtrackDl(in SolveInput, occ []Occurrence, hard HardSet, days, slots int,
 		roomBusy[r.ID] = newGrid(days, slots)
 	}
 
+	// Делёные уроки: урок подгруппы с тем же предметом, что и урок
+	// родительского класса — пара половинок (ставятся параллельно).
 	bodies := buildStudentBodies(in.Classes)
 	classSetsMap := buildClassSets(in.Classes)
 
@@ -261,6 +318,20 @@ func backtrackDl(in SolveInput, occ []Occurrence, hard HardSet, days, slots int,
 		o := occ[oi]
 		cs := classSetsMap[o.Lesson.ClassID]
 		cands := candidateCells(o, hard, days, slots, classBusy, cs.check, roomBusy, o.Lesson.SubjectID)
+		// Делёная половинка: ставится ПАРАЛЛЕЛЬНО своей базе — кандидаты
+		// только в слотах, где уже стоит базовый урок.
+		if baseOcc, isHalf := baseOfOcc[oi]; isHalf {
+			baseCell := assign[baseOcc]
+			if baseCell.room != 0 {
+				filtered := cands[:0]
+				for _, cc := range cands {
+					if cc.day == baseCell.day && cc.slot == baseCell.slot {
+						filtered = append(filtered, cc)
+					}
+				}
+				cands = filtered
+			}
+		}
 		shuffle(cands, rng)
 		tID := o.Lesson.TeacherID
 		cID := o.Lesson.ClassID
@@ -329,13 +400,13 @@ func backtrackDl(in SolveInput, occ []Occurrence, hard HardSet, days, slots int,
 	}
 	// Прерваны по дедлайну: возвращаем частичное размещение — assign
 	// содержит все успешно поставленные на данный момент уроки.
-	placed := 0
+	partialCount := 0
 	for _, c := range assign {
 		if c.room != 0 {
-			placed++
+			partialCount++
 		}
 	}
-	if placed > 0 {
+	if partialCount > 0 {
 		entries := buildEntries(in, assign, occ)
 		return Result{Entries: entries, Placed: len(entries), Total: len(occ), Violations: softViolations(in, entries, days)}
 	}
@@ -629,6 +700,14 @@ func buildStudentBodies(classes map[int]domain.SchoolClass) map[int][]int { // l
 		res[id] = set
 	}
 	return res
+}
+
+// subParentOfClass: id родительского класса, если класс — подгруппа (иначе 0).
+func subParentOfClass(classes map[int]domain.SchoolClass, classID int) int {
+	if c, ok := classes[classID]; ok && c.SubgroupOf != nil {
+		return *c.SubgroupOf
+	}
+	return 0
 }
 
 // classSets — наборы для размещения урока класса:

@@ -3,8 +3,18 @@
 package solver
 
 import (
+	"fmt"
+
 	"timetable/internal/domain"
 )
+
+// subParentOfClass2: id родительского класса, если класс — подгруппа (иначе 0).
+func subParentOfClass2(classes map[int]domain.SchoolClass, classID int) int {
+	if c, ok := classes[classID]; ok && c.SubgroupOf != nil {
+		return *c.SubgroupOf
+	}
+	return 0
+}
 
 func constraintTypeCode(t string) int {
 	switch t {
@@ -53,6 +63,8 @@ func appendStudentGroupConstraints(in SolveInput) SolveInput {
 	for parent, kids := range groups {
 		for _, kid := range kids {
 			subj := subSubjectOf(kid, in.Lessons)
+			// РАЗНЫЕ предметы у родителя и подгруппы: запрет пересечения (9).
+			// Одинаковые: одновременность (10) — половинки параллельно.
 			out.Constraints = append(out.Constraints, domain.Constraint{
 				Type:          "student_group",
 				EntityType:    "class",
@@ -63,7 +75,45 @@ func appendStudentGroupConstraints(in SolveInput) SolveInput {
 			})
 		}
 	}
+	// Одновременность: для каждой пары (база, половинка) с одним предметом.
+	halfOf := map[int]int{}
+	byKey := map[string]int{}
+	for _, l := range in.Lessons {
+		if p := subParentOfClass2(in.Classes, l.ClassID); p != 0 {
+			key := fmt.Sprintf("%d:%d", p, l.SubjectID)
+			if base, ok := byKey[key]; ok {
+				halfOf[l.ID] = base
+			} else {
+				byKey[key] = l.ID
+			}
+		}
+	}
+	for _, l := range in.Lessons {
+		if base, ok := halfOf[l.ID]; ok {
+			baseIdx := lessonIndexOf(in.Lessons, base)
+			childIdx := lessonIndexOf(in.Lessons, l.ID)
+			if baseIdx >= 0 && childIdx >= 0 {
+				out.Constraints = append(out.Constraints, domain.Constraint{
+					Type:       "simultaneous_groups",
+					EntityType: "lesson_pair",
+					EntityID:   childIdx,
+					Weight:     baseIdx,
+					IsHard:     true,
+				})
+			}
+		}
+	}
 	return out
+}
+
+// lessonIndexOf: индекс урока в срезе (-1 если нет).
+func lessonIndexOf(lessons []domain.Lesson, id int) int {
+	for i, l := range lessons {
+		if l.ID == id {
+			return i
+		}
+	}
+	return -1
 }
 
 // subSubjectOf: предмет первого урока подгруппы (0 если нет).

@@ -46,11 +46,12 @@ extern "C" ScheduleResult* ortools_solve(
   if (O == 0 || D == 0 || S == 0 || R == 0) return nullptr;
 
   // entity -> occurrence indices
-  std::map<int, std::vector<int>> teacherOccs, classOccs;
+  std::map<int, std::vector<int>> teacherOccs, classOccs, lessonOccs;
   std::vector<int> schoolOccs;
   for (int o = 0; o < O; ++o) {
     teacherOccs[occ[o].teacher].push_back(o);
     classOccs[occ[o].cls].push_back(o);
+    lessonOccs[occ[o].lesson].push_back(o);
     schoolOccs.push_back(o);
   }
 
@@ -221,6 +222,25 @@ extern "C" ScheduleResult* ortools_solve(
                 for (int r = 0; r < R; ++r) vars.push_back(x[co][d][s][r]);
                 cp.AddAtMostOne(vars);
               }
+          }
+        break;
+      }
+      case 10: {  // simultaneous_groups: половинки делёного урока —
+                  // ОБЯЗАНЫ быть в одном слоте (класс делится на группы).
+        int halfIdx = c.entity_id, baseIdx = c.value;
+        auto hit = lessonOccs.find(halfIdx);
+        auto bit = lessonOccs.find(baseIdx);
+        if (hit == lessonOccs.end() || bit == lessonOccs.end()) break;
+        for (int d = 0; d < D; ++d)
+          for (int s = 0; s < S; ++s) {
+            std::vector<BoolVar> v1, v2;
+            for (int o : hit->second) for (int r = 0; r < R; ++r) v1.push_back(x[o][d][s][r]);
+            for (int o : bit->second) for (int r = 0; r < R; ++r) v2.push_back(x[o][d][s][r]);
+            if (v1.empty() || v2.empty()) continue;
+            LinearExpr sum1 = LinearExpr::Sum(v1);
+            LinearExpr sum2 = LinearExpr::Sum(v2);
+            // sum1 == sum2  =>  sum1 - sum2 == 0
+            cp.AddEquality(sum1 - sum2, 0);
           }
         break;
       }
