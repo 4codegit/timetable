@@ -129,7 +129,7 @@
                 ? teachers.map((t) => ({ id: t.id, label: t.name }))
                 : kind === "room"
                 ? rooms.map((r) => ({ id: r.id, label: r.name }))
-                : orderClasses(classes.map((c) => ({ id: c.id, label: c.name, subgroup_of: c.subgroup_of })));
+                : orderClasses(classes.map((c) => ({ id: c.id, label: c.name, subgroup_of: c.subgroup_of }))).filter((c) => !c.subgroup_of);
 
         // PDF следует выбранному «Виду» на экране — что видите, то и в файле.
         $: exportMode = viewMode;
@@ -1429,7 +1429,7 @@
                                                                                                                 data-slot={si}
                                                                                                                 data-row={row.id}
                                                                                                                 data-kind={kind}
-                                                                                                                on:pointerdown={(e) => onPointerDown(e, cell, kind, row.id, activeDayIdx[di], si)}>{#if cell}<div class="chip" class:conflict={cell.conflict} style="background:{cell.conflict ? '#dc2626' : subjectColor(cell.subject_id)}">{subjShort(subjects, cell.subject_id)}</div>{/if}</td>{/each}</tr>
+                                                                                                                on:pointerdown={(e) => onPointerDown(e, cell, kind, row.id, activeDayIdx[di], si)}>{#if cell}<div class="chip" class:conflict={cell.conflict} style="background:{cell.conflict ? '#dc2626' : subjectColor(cell.subject_id)}">{subjShort(subjects, cell.subject_id)}</div>{:else}{#each cellSubs("class", row.id, activeDayIdx[di], si) as sc}<div class="chip half" style="background:{subjectColor(sc.subject_id)}" title="Подгруппа {classes.find((c) => c.id === sc.class_id)?.name || ''}">{subjShort(subjects, sc.subject_id)}</div>{/each}{/if}</td>{/each}</tr>
                                                                                                 {/each}
                                                                                         </tbody>
                                                                                 </table>
