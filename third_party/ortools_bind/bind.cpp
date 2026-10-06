@@ -202,19 +202,25 @@ extern "C" ScheduleResult* ortools_solve(
         }
         break;
       }
-      case 9: {  // student_group: подгруппа (entity_id) не совпадает по
-                 // времени с родительским классом (value); две подгруппы
-                 // одного родителя МОГУТ идти параллельно.
-        int child = c.entity_id, parent = c.value;
+      case 9: {  // student_group: делёный предмет — обе половинки МОГУТ
+                 // идти параллельно (один предмет, разные учителя).
+                 // Запрещаем только пары РАЗНЫХ предметов:
+                 // урок родителя (subject != subject подгруппы) не может
+                 // пересечься с уроком подгруппы.
+        int child = c.entity_id, parent = c.value, subj = c.slot_start;
         auto pit = classOccs.find(parent);
         auto cit = classOccs.find(child);
         if (pit == classOccs.end() || cit == classOccs.end()) break;
-        for (int d = 0; d < D; ++d)
-          for (int s = 0; s < S; ++s) {
-            std::vector<BoolVar> vars;
-            for (int o : pit->second) for (int r = 0; r < R; ++r) vars.push_back(x[o][d][s][r]);
-            for (int o : cit->second) for (int r = 0; r < R; ++r) vars.push_back(x[o][d][s][r]);
-            if (!vars.empty()) cp.AddAtMostOne(vars);
+        for (int po : pit->second)
+          for (int co : cit->second) {
+            if (occ[po].subject == occ[co].subject) continue; // делёный предмет
+            for (int d = 0; d < D; ++d)
+              for (int s = 0; s < S; ++s) {
+                std::vector<BoolVar> vars;
+                for (int r = 0; r < R; ++r) vars.push_back(x[po][d][s][r]);
+                for (int r = 0; r < R; ++r) vars.push_back(x[co][d][s][r]);
+                cp.AddAtMostOne(vars);
+              }
           }
         break;
       }

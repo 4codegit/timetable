@@ -33,9 +33,9 @@ func constraintTypeCode(t string) int {
 }
 
 // appendStudentGroupConstraints добавляет синтетические жёсткие
-// ограничения student_group: подгруппа (entity_id) не может пересекаться
-// по времени с уроком родительского класса (value). Две подгруппы одного
-// родителя при этом МОГУТ идти параллельно с разными учителями.
+// ограничения student_group: подгруппа (entity_id) + родитель (value).
+// TimeslotStart несёт предмет подгруппы — биндинг запрещает только пары
+// РАЗНЫХ предметов (делёный предмет: обе половинки параллельно).
 func appendStudentGroupConstraints(in SolveInput) SolveInput {
 	groups := map[int][]int{}
 	for _, c := range in.Classes {
@@ -52,16 +52,28 @@ func appendStudentGroupConstraints(in SolveInput) SolveInput {
 	out.Constraints = append([]domain.Constraint(nil), in.Constraints...)
 	for parent, kids := range groups {
 		for _, kid := range kids {
+			subj := subSubjectOf(kid, in.Lessons)
 			out.Constraints = append(out.Constraints, domain.Constraint{
-				Type:       "student_group",
-				EntityType: "class",
-				EntityID:   kid,
-				Weight:     parent,
-				IsHard:     true,
+				Type:          "student_group",
+				EntityType:    "class",
+				EntityID:      kid,
+				Weight:        parent,
+				TimeslotStart: &subj,
+				IsHard:        true,
 			})
 		}
 	}
 	return out
+}
+
+// subSubjectOf: предмет первого урока подгруппы (0 если нет).
+func subSubjectOf(childClass int, lessons []domain.Lesson) int {
+	for _, l := range lessons {
+		if l.ClassID == childClass {
+			return l.SubjectID
+		}
+	}
+	return 0
 }
 
 func entityTypeCode(t string) int {

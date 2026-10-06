@@ -182,13 +182,14 @@ func backtrackDl(in SolveInput, occ []Occurrence, hard HardSet, days, slots int,
 	})
 
 	teacherBusy := map[int][][]bool{}
-	classBusy := map[int][][]bool{}
+	classBusy := map[int][][]int{}
 	roomBusy := map[int][][]bool{}
+	_ = classBusy
 	for t := range in.Teachers {
 		teacherBusy[t] = newGrid(days, slots)
 	}
 	for c := range in.Classes {
-		classBusy[c] = newGrid(days, slots)
+		classBusy[c] = newGridInt(days, slots)
 	}
 	for _, r := range in.Rooms {
 		roomBusy[r.ID] = newGrid(days, slots)
@@ -259,7 +260,7 @@ func backtrackDl(in SolveInput, occ []Occurrence, hard HardSet, days, slots int,
 		oi := order[k]
 		o := occ[oi]
 		cs := classSetsMap[o.Lesson.ClassID]
-		cands := candidateCells(o, hard, days, slots, classBusy, cs.check, roomBusy)
+		cands := candidateCells(o, hard, days, slots, classBusy, cs.check, roomBusy, o.Lesson.SubjectID)
 		shuffle(cands, rng)
 		tID := o.Lesson.TeacherID
 		cID := o.Lesson.ClassID
@@ -271,7 +272,7 @@ func backtrackDl(in SolveInput, occ []Occurrence, hard HardSet, days, slots int,
 			if teacherBusy[tID][cc.day][cc.slot] {
 				continue
 			}
-			if !classFree(cs.check, classBusy, cc.day, cc.slot) {
+			if !classFree(cs.check, classBusy, cc.day, cc.slot, o.Lesson.SubjectID) {
 				continue
 			}
 			if roomBusy[cc.room][cc.day][cc.slot] {
@@ -286,12 +287,12 @@ func backtrackDl(in SolveInput, occ []Occurrence, hard HardSet, days, slots int,
 			if tMaxCons > 0 && runIfPlaced(teacherBusy[tID], cc.day, cc.slot) > tMaxCons {
 				continue
 			}
-			if cMaxCons > 0 && runIfPlaced(classBusy[cID], cc.day, cc.slot) > cMaxCons {
+			if cMaxCons > 0 && runIfPlacedInt(classBusy[cID], cc.day, cc.slot) > cMaxCons {
 				continue
 			}
 			teacherBusy[tID][cc.day][cc.slot] = true
 			for _, cid := range cs.mark {
-				classBusy[cid][cc.day][cc.slot] = true
+				classBusy[cid][cc.day][cc.slot] = o.Lesson.SubjectID
 			}
 			roomBusy[cc.room][cc.day][cc.slot] = true
 			teacherDay[tID][cc.day]++
@@ -308,7 +309,7 @@ func backtrackDl(in SolveInput, occ []Occurrence, hard HardSet, days, slots int,
 			}
 			teacherBusy[tID][cc.day][cc.slot] = false
 			for _, cid := range cs.mark {
-				classBusy[cid][cc.day][cc.slot] = false
+				classBusy[cid][cc.day][cc.slot] = 0
 			}
 			roomBusy[cc.room][cc.day][cc.slot] = false
 			teacherDay[tID][cc.day]--
@@ -345,21 +346,14 @@ type cell struct {
 	day, slot, room int
 }
 
-func candidateCells(o Occurrence, hard HardSet, days, slots int, classBusy map[int][][]bool, classSet []int, roomBusy map[int][][]bool) []cell {
+func candidateCells(o Occurrence, hard HardSet, days, slots int, classBusy map[int][][]int, classSet []int, roomBusy map[int][][]bool, subj int) []cell {
 	var out []cell
 	for d := 0; d < days; d++ {
 		for s := 0; s < slots; s++ {
 			if hard.Forbidden(o.Lesson.TeacherID, o.Lesson.ClassID, 0, d, s) {
 				continue
 			}
-			free := true
-			for _, cid := range classSet {
-				if classBusy[cid][d][s] {
-					free = false
-					break
-				}
-			}
-			if !free {
+			if !classFree(classSet, classBusy, d, s, subj) {
 				continue
 			}
 			for _, r := range o.RoomChoices {
@@ -596,6 +590,14 @@ func gapCount(entries []domain.ScheduleEntry, classID int) int {
 	return total
 }
 
+func newGridInt(days, slots int) [][]int {
+	g := make([][]int, days)
+	for i := range g {
+		g[i] = make([]int, slots)
+	}
+	return g
+}
+
 func newGrid(days, slots int) [][]bool {
 	g := make([][]bool, days)
 	for i := range g {
@@ -665,16 +667,34 @@ func buildClassSets(classes map[int]domain.SchoolClass) map[int]classSets {
 	return res
 }
 
-func classFree(cset []int, classBusy map[int][][]bool, d, s int) bool {
+// classFree: слот свободен для урока с предметом subj. Занятость
+// хранит ID предмета: занято ТЕМ ЖЕ предметом (делёный урок, обе
+// половинки параллельно) — не блокирует; другим предметом — блокирует.
+func classFree(cset []int, classBusy map[int][][]int, d, s int, subj int) bool {
 	for _, cid := range cset {
-		if classBusy[cid][d][s] {
-			return false
+		busySubj := classBusy[cid][d][s]
+		if busySubj == 0 {
+			continue
+		}
+		if busySubj == subj {
+			continue // делёный предмет: обе половинки параллельно
 		}
 	}
 	return true
 }
 
 // runIfPlaced returns the length of the consecutive occupied run through (day,slot) if it were occupied.
+func runIfPlacedInt(g [][]int, day, slot int) int {
+	cnt := 1
+	for s := slot - 1; s >= 0 && g[day][s] != 0; s-- {
+		cnt++
+	}
+	for s := slot + 1; s < len(g[day]) && g[day][s] != 0; s++ {
+		cnt++
+	}
+	return cnt
+}
+
 func runIfPlaced(g [][]bool, day, slot int) int {
 	cnt := 1
 	for s := slot - 1; s >= 0 && g[day][s]; s-- {
