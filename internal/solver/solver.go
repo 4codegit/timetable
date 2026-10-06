@@ -611,7 +611,7 @@ func shuffle(c []cell, rng *rand.Rand) {
 // buildStudentBodies returns, for each class, the set of class ids whose
 // student bodies overlap: у родителя тело включает подгруппы, у подгруппы —
 // только она сама (две подгруппы одного родителя disjoint).
-func buildStudentBodies(classes map[int]domain.SchoolClass) map[int][]int {  // lint: keep
+func buildStudentBodies(classes map[int]domain.SchoolClass) map[int][]int { // lint: keep
 	children := map[int][]int{}
 	for id, c := range classes {
 		if c.SubgroupOf != nil {
