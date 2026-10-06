@@ -182,7 +182,7 @@
         async function deleteSchool() {
                 if (!activeSchoolID) return;
                 const name = schools.find((s) => s.id === activeSchoolID)?.name || "";
-                if (!confirmAction("Удалить школу «" + name + "»? Будут удалены ВСЕ её данные: классы, учителя, предметы, кабинеты, уроки и расписание.")) return;
+                if (!await confirmAction("Удалить школу «" + name + "»? Будут удалены ВСЕ её данные: классы, учителя, предметы, кабинеты, уроки и расписание.")) return;
                 await DeleteSchool(activeSchoolID);
                 activeSchoolID = 0;
                 await loadSchools();
@@ -446,8 +446,21 @@
                 } catch (e) { flash("Ошибка обновления урока: " + (e && e.message ? e.message : e)); }
         }
         async function removeLesson(id) { if (!await confirmAction("Удалить урок?")) return; await pushHistory(); await DeleteLesson(id); await reloadRefs(); flash("Урок удалён"); }
-        async function confirmAction(message) {
-                return window.confirm(message);
+        // window.confirm не работает в Wails (WebView2 гасит JS-диалоги),
+        // поэтому подтверждение — собственное модальное окно, одинаковое
+        // и в браузерном, и в десктопном режиме.
+        let confirmBox = null; // { message, confirmLabel }
+        let confirmResolve = null;
+        function confirmAction(message, confirmLabel = "Удалить") {
+                return new Promise((resolve) => {
+                        confirmBox = { message, confirmLabel };
+                        confirmResolve = resolve;
+                });
+        }
+        function settleConfirm(answer) {
+                if (confirmResolve) confirmResolve(answer);
+                confirmBox = null;
+                confirmResolve = null;
         }
         async function removeTeacher(id) { if (!await confirmAction("Удалить учителя? Все его уроки тоже будут удалены.")) return; await pushHistory(); await DeleteTeacher(id); await reloadRefs(); flash("Учитель удалён"); }
         async function removeSubject(id) { if (!await confirmAction("Удалить предмет? Связанные уроки тоже будут удалены.")) return; await pushHistory(); await DeleteSubject(id); await reloadRefs(); flash("Предмет удалён"); }
@@ -1438,6 +1451,19 @@
                         </div>
                 {/if}
 
+                {#if confirmBox}
+                        <div class="modal-backdrop" role="button" tabindex="-1" on:click={() => settleConfirm(false)} on:keydown={(e) => { if (e.key === 'Escape') settleConfirm(false); }}>
+                                <div class="modal" role="dialog" tabindex="0" on:click|stopPropagation on:keydown|stopPropagation>
+                                        <h3>Подтверждение</h3>
+                                        <p class="modal-msg">{confirmBox.message}</p>
+                                        <div class="modal-actions">
+                                                <button on:click={() => settleConfirm(false)}>Отмена</button>
+                                                <button class="danger" on:click={() => settleConfirm(true)}>{confirmBox.confirmLabel}</button>
+                                        </div>
+                                </div>
+                        </div>
+                {/if}
+
 
         </div>
 </div>
@@ -1580,6 +1606,7 @@
         .modal { background: #fff; border-radius: 14px; padding: 22px; width: 360px; max-width: 90vw; box-shadow: 0 20px 60px rgba(0,0,0,0.3); }
         .modal h3 { margin: 0 0 6px; font-size: 16px; color: #0f172a; }
         .modal-input { width: 100%; margin: 12px 0; box-sizing: border-box; }
+        .modal-msg { margin: 12px 0 0; font-size: 13.5px; line-height: 1.45; color: #334155; }
         .modal-actions { display: flex; justify-content: flex-end; gap: 8px; }
         .report { margin-top: 14px; border: 1px solid #fecaca; background: #fef2f2; border-radius: 10px; padding: 10px 14px; font-size: 13px; }
         .report h3 { margin: 0 0 6px; font-size: 13px; color: #b91c1c; }
