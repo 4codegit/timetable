@@ -18,6 +18,7 @@ func renderSchoolPacked(pdf *gopdf.GoPdf, opts Options, th ascTheme, dayIdx []in
 		capH    = 5.0
 		gap     = 6.0
 		minColW = 14.0
+		maxColW = 40.0 // колонка не растягивается на весь лист (стиль aSc)
 		minRowH = 6.0
 	)
 	daysN := len(dayIdx)
@@ -31,13 +32,15 @@ func renderSchoolPacked(pdf *gopdf.GoPdf, opts Options, th ascTheme, dayIdx []in
 	// Подбор сетки: минимум страниц, затем максимум площади ячейки
 	// (min() сравнивал неверно: после насыщения rowH выигрывал вариант
 	// с большим числом узких колонок), при равенстве — меньше колонок.
+	// colW ограничен сверху maxColW: при малом числе классов таблица
+	// не должна распираться на всю ширину страницы.
 	type gridCand struct {
 		cols, perCol, pages int
 		score               float64
 	}
 	var cands []gridCand
 	for cols := 1; cols <= 4; cols++ {
-		colW := (availW - float64(cols)*dayColW - float64(cols-1)*gap) / float64(cols*opts.Slots)
+		colW := minF((availW-float64(cols)*dayColW-float64(cols-1)*gap)/float64(cols*opts.Slots), maxColW)
 		if colW < minColW {
 			break
 		}
@@ -68,7 +71,7 @@ func renderSchoolPacked(pdf *gopdf.GoPdf, opts Options, th ascTheme, dayIdx []in
 	}
 
 	cols, perCol := best.cols, best.perCol
-	colW := (availW - float64(cols)*dayColW - float64(cols-1)*gap) / float64(cols*opts.Slots)
+	colW := minF((availW-float64(cols)*dayColW-float64(cols-1)*gap)/float64(cols*opts.Slots), maxColW)
 	rowH := minF((availH/float64(perCol)-capH-hdrH-gap)/float64(daysN), 11.0)
 	tableW := dayColW + colW*float64(opts.Slots)
 	tableH := capH + hdrH + rowH*float64(daysN)

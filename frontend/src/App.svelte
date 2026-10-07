@@ -15,7 +15,7 @@
         let activeSchoolID = 0;
         let newSchoolName = "Моя школа";
         let tab = "refs";
-        const APP_VERSION = "1.10.3";
+        const APP_VERSION = "1.10.4";
         let msg = "";
 
         let teachers = [], subjects = [], classes = [], rooms = [], lessons = [], constraints = [], schedule = [];
@@ -326,6 +326,24 @@
                         if (c.type !== "teacher_unavailable" && c.type !== "class_unavailable" && c.type !== "room_unavailable") continue;
                         for (const e of schedule) if (violatesUnavailable(c, e)) ids.add(e.id);
                 }
+                // Делёные уроки: запись половинки, у которой в этом же слоте
+                // нет сестринской записи, стоит не параллельно — конфликт.
+                const twinOfLesson = {};
+                for (const l of lessons) {
+                        const t = dividedTwinLesson(l.id);
+                        if (t) twinOfLesson[l.id] = t.id;
+                }
+                const halfAt = {};
+                for (const e of schedule) {
+                        if (!twinOfLesson[e.lesson_id]) continue;
+                        const k = e.lesson_id + ":" + e.day_of_week + ":" + e.timeslot;
+                        halfAt[k] = (halfAt[k] || 0) + 1;
+                }
+                for (const e of schedule) {
+                        const twinId = twinOfLesson[e.lesson_id];
+                        if (!twinId) continue;
+                        if (!halfAt[twinId + ":" + e.day_of_week + ":" + e.timeslot]) ids.add(e.id);
+                }
                 return ids;
         }
 
@@ -380,6 +398,20 @@
                                 if (violatesUnavailable(c, e)) {
                                         violations.push({ day: e.day_of_week, slot: e.timeslot, what: constraintTypeLabel(c.type) + " · " + constraintEntityLabel(c) });
                                 }
+                        }
+                }
+                // Делёные уроки: половинки без пары в своём слоте.
+                for (const e of schedule) {
+                        const twinId = (() => { const l = lessons.find((x) => x.id === e.lesson_id); return l ? (dividedTwinLesson(l.id)?.id || 0) : 0; })();
+                        if (!twinId) continue;
+                        const hasTwin = schedule.some((x) => x.lesson_id === twinId
+                                && x.day_of_week === e.day_of_week && x.timeslot === e.timeslot);
+                        if (!hasTwin) {
+                                conflicts.push({
+                                        type: "Деление",
+                                        day: e.day_of_week, slot: e.timeslot,
+                                        items: [{ subject: subjName(subjects, e.subject_id), who: className(classes, e.class_id) + " — половинка без пары" }]
+                                });
                         }
                 }
                 return { conflicts, unplaced, overloads, violations };
@@ -549,6 +581,47 @@
                 if (kind === "class" && cellCount >= 2) {
                         flash("⚠ Ячейка заполнена: максимум два урока (класс + подгруппа).");
                         return;
+                }
+
+                // Делёный урок (модель aSc): половинки одного предмета у
+                // подгрупп одного родителя перемещаются ПАРОЙ, иначе
+                // параллельность ломается (половинка остаётся без пары).
+                const twinLesson = kind === "class" ? dividedTwinLesson(src.lesson_id) : null;
+                if (kind !== "class" && twinLesson) {
+                        flash("⚠ Делёный урок перемещается парой — двигайте его в сетке класса.");
+                        return;
+                }
+                if (twinLesson) {
+                        const twinEntry = schedule.find((en) => en.lesson_id === twinLesson.id
+                                && en.day_of_week === src.day_of_week && en.timeslot === src.timeslot);
+                        if (twinEntry) {
+                                const famCount = schedule.filter((en) => en.id !== src.id
+                                        && en.day_of_week === day && en.timeslot === slot
+                                        && (en.class_id === rowId || subParentOf(en.class_id) === rowId)).length;
+                                if (famCount > 0) {
+                                        flash("⚠ Делёный урок перемещается парой — целевая ячейка должна быть пустой.");
+                                        return;
+                                }
+                                const snapshot = schedule.slice();
+                                await pushHistory();
+                                schedule = schedule.map((en) => (en.id === src.id || en.id === twinEntry.id)
+                                        ? { ...en, day_of_week: day, timeslot: slot }
+                                        : en);
+                                flash(`✓ Делёный урок перемещён парой → ${dayName(day)} П${slot + 1}`);
+                                try {
+                                        await MoveEntry(src.id, day, slot);
+                                        await MoveEntry(twinEntry.id, day, slot);
+                                } catch (err) {
+                                        schedule = snapshot;
+                                        flash(`⚠ Не удалось переместить пару: ${err && err.message ? err.message : err}`);
+                                        return;
+                                }
+                                try { schedule = (await ListSchedule(activeSchoolID)) || []; } catch (e) { /* optimistic state */ }
+                                return;
+                        }
+                        // Пары в исходном слоте нет (состояние уже разъединено,
+                        // подсвечено красным) — одиночный перенос позволяет
+                        // «приклеить» половинку обратно к её паре.
                 }
 
                 // Snapshot for rollback if the backend rejects the change.
@@ -816,6 +889,18 @@
         function subParentOf(classId) {
                 const c = classes.find((x) => x.id === classId);
                 return c?.subgroup_of || null;
+        }
+        // Делёная пара (модель aSc): у урока подгруппы есть «сестринский»
+        // урок ТОГО ЖЕ предмета у другой подгруппы того же родителя.
+        // Половинки обязаны стоять параллельно и двигаться как группа.
+        function dividedTwinLesson(lessonId) {
+                const l = lessons.find((x) => x.id === lessonId);
+                if (!l) return null;
+                const parent = subParentOf(l.class_id);
+                if (!parent) return null;
+                return lessons.find((x) => x.id !== l.id
+                        && x.subject_id === l.subject_id
+                        && subParentOf(x.class_id) === parent) || null;
         }
         function cellAt(kind, id, day, slot) {
                 const e = schedule.find((en) => {

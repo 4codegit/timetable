@@ -38,6 +38,8 @@ func constraintTypeCode(t string) int {
 		return 8
 	case "student_group":
 		return 9
+	case "simultaneous_groups":
+		return 10
 	}
 	return -1
 }
