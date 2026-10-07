@@ -1,17 +1,14 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/base64"
-	"encoding/csv"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -321,261 +318,6 @@ func (a *App) GeneratePrecise(schoolID, days, slots, daysMask int) (*solver.Resu
 	return &res, nil
 }
 
-// ---- Import / Export ----
-
-// ExportRefsCSV returns a CSV representation of a reference entity
-// (teachers | classes | subjects | rooms | lessons) for the given school.
-func (a *App) ExportRefsCSV(schoolID int, entity string) (string, error) {
-	var buf bytes.Buffer
-	w := csv.NewWriter(&buf)
-
-	switch entity {
-	case "teachers":
-		ts, err := a.store.ListTeachers(schoolID)
-		if err != nil {
-			return "", err
-		}
-		for _, t := range ts {
-			w.Write([]string{t.Name, t.ShortName, strconv.Itoa(t.MaxHoursPerWeek)})
-		}
-	case "classes":
-		cs, err := a.store.ListClasses(schoolID)
-		if err != nil {
-			return "", err
-		}
-		rs, _ := a.store.ListRooms(schoolID)
-		for _, c := range cs {
-			room := ""
-			for _, r := range rs {
-				if r.ID == c.RoomID {
-					room = r.Name
-				}
-			}
-			w.Write([]string{c.Name, strconv.Itoa(c.Grade), room})
-		}
-	case "subjects":
-		ss, err := a.store.ListSubjects(schoolID)
-		if err != nil {
-			return "", err
-		}
-		for _, s := range ss {
-			w.Write([]string{s.Name, s.ShortName, s.RequiresRoomType})
-		}
-	case "rooms":
-		rs, err := a.store.ListRooms(schoolID)
-		if err != nil {
-			return "", err
-		}
-		for _, r := range rs {
-			w.Write([]string{r.Name, r.RoomType})
-		}
-	case "lessons":
-		ls, err := a.store.ListLessons(schoolID)
-		if err != nil {
-			return "", err
-		}
-		cs, _ := a.store.ListClasses(schoolID)
-		ss, _ := a.store.ListSubjects(schoolID)
-		ts, _ := a.store.ListTeachers(schoolID)
-		cMap := map[int]string{}
-		for _, c := range cs {
-			cMap[c.ID] = c.Name
-		}
-		sMap := map[int]string{}
-		for _, s := range ss {
-			sMap[s.ID] = s.Name
-		}
-		tMap := map[int]string{}
-		for _, t := range ts {
-			tMap[t.ID] = t.Name
-		}
-		for _, l := range ls {
-			w.Write([]string{cMap[l.ClassID], sMap[l.SubjectID], tMap[l.TeacherID], strconv.Itoa(l.HoursPerWeek), strconv.Itoa(l.MinGapDays)})
-		}
-	case "periods":
-		st := a.loadSettings(schoolID)
-		for i, p := range st.Periods {
-			w.Write([]string{strconv.Itoa(i + 1), p.Start, p.End})
-		}
-	default:
-		return "", fmt.Errorf("unknown entity %q", entity)
-	}
-	w.Flush()
-	if err := w.Error(); err != nil {
-		return "", err
-	}
-	return buf.String(), nil
-}
-
-// ImportRefsCSV parses a CSV file (with header) for the given entity and inserts
-// rows into the database. For "lessons" the class/subject/teacher are resolved by name.
-// Returns the number of inserted rows.
-func (a *App) ImportRefsCSV(schoolID int, entity string, csvText string) (int, error) {
-	r := csv.NewReader(strings.NewReader(csvText))
-	r.FieldsPerRecord = -1
-	records, err := r.ReadAll()
-	if err != nil {
-		return 0, fmt.Errorf("csv parse: %w", err)
-	}
-	if len(records) < 1 {
-		return 0, fmt.Errorf("no data rows")
-	}
-	// skip header if first field looks like a header
-	start := 0
-	if records[0][0] == "name" || records[0][0] == "class" {
-		start = 1
-	}
-
-	count := 0
-	switch entity {
-	case "teachers":
-		for _, row := range records[start:] {
-			if len(row) < 1 || strings.TrimSpace(row[0]) == "" {
-				continue
-			}
-			short := ""
-			if len(row) > 1 {
-				short = row[1]
-			}
-			maxh := 30
-			if len(row) > 2 {
-				if v, err := strconv.Atoi(strings.TrimSpace(row[2])); err == nil {
-					maxh = v
-				}
-			}
-			if _, err := a.store.CreateTeacher(domain.Teacher{SchoolID: schoolID, Name: row[0], ShortName: short, MaxHoursPerWeek: maxh}); err != nil {
-				return count, err
-			}
-			count++
-		}
-	case "classes":
-		rs, _ := a.store.ListRooms(schoolID)
-		for _, row := range records[start:] {
-			if len(row) < 1 || strings.TrimSpace(row[0]) == "" {
-				continue
-			}
-			grade := 0
-			if len(row) > 1 {
-				if v, err := strconv.Atoi(strings.TrimSpace(row[1])); err == nil {
-					grade = v
-				}
-			}
-			roomID := 0
-			if len(row) > 2 && strings.TrimSpace(row[2]) != "" {
-				roomName := strings.TrimSpace(row[2])
-				for _, r := range rs {
-					if r.Name == roomName {
-						roomID = r.ID
-					}
-				}
-			}
-			if _, err := a.store.CreateClass(domain.SchoolClass{SchoolID: schoolID, Name: row[0], Grade: grade, RoomID: roomID}); err != nil {
-				return count, err
-			}
-			count++
-		}
-	case "subjects":
-		for _, row := range records[start:] {
-			if len(row) < 1 || strings.TrimSpace(row[0]) == "" {
-				continue
-			}
-			short := ""
-			if len(row) > 1 {
-				short = row[1]
-			}
-			rt := "any"
-			if len(row) > 2 && strings.TrimSpace(row[2]) != "" {
-				rt = row[2]
-			}
-			if _, err := a.store.CreateSubject(domain.Subject{SchoolID: schoolID, Name: row[0], ShortName: short, RequiresRoomType: rt}); err != nil {
-				return count, err
-			}
-			count++
-		}
-	case "rooms":
-		for _, row := range records[start:] {
-			if len(row) < 1 || strings.TrimSpace(row[0]) == "" {
-				continue
-			}
-			rt := "any"
-			if len(row) > 1 && strings.TrimSpace(row[1]) != "" {
-				rt = row[1]
-			}
-			if _, err := a.store.CreateRoom(domain.Room{SchoolID: schoolID, Name: row[0], RoomType: rt}); err != nil {
-				return count, err
-			}
-			count++
-		}
-	case "lessons":
-		cs, _ := a.store.ListClasses(schoolID)
-		ss, _ := a.store.ListSubjects(schoolID)
-		ts, _ := a.store.ListTeachers(schoolID)
-		cID := map[string]int{}
-		for _, c := range cs {
-			cID[c.Name] = c.ID
-		}
-		sID := map[string]int{}
-		for _, s := range ss {
-			sID[s.Name] = s.ID
-		}
-		tID := map[string]int{}
-		for _, t := range ts {
-			tID[t.Name] = t.ID
-		}
-		for _, row := range records[start:] {
-			if len(row) < 3 || strings.TrimSpace(row[0]) == "" {
-				continue
-			}
-			classID, ok := cID[row[0]]
-			if !ok {
-				return count, fmt.Errorf("class not found: %q", row[0])
-			}
-			subjID, ok := sID[row[1]]
-			if !ok {
-				return count, fmt.Errorf("subject not found: %q", row[1])
-			}
-			teachID, ok := tID[row[2]]
-			if !ok {
-				return count, fmt.Errorf("teacher not found: %q", row[2])
-			}
-			hours := 1
-			if len(row) > 3 {
-				if v, err := strconv.Atoi(strings.TrimSpace(row[3])); err == nil {
-					hours = v
-				}
-			}
-			gap := 1
-			if len(row) > 4 {
-				if v, err := strconv.Atoi(strings.TrimSpace(row[4])); err == nil {
-					gap = v
-				}
-			}
-			if _, err := a.store.CreateLesson(domain.Lesson{SchoolID: schoolID, ClassID: classID, SubjectID: subjID, TeacherID: teachID, HoursPerWeek: hours, MinGapDays: gap, PreferredRooms: "[]"}); err != nil {
-				return count, err
-			}
-			count++
-		}
-	case "periods":
-		st := a.loadSettings(schoolID)
-		var ps []period
-		for _, row := range records[start:] {
-			if len(row) < 3 || strings.TrimSpace(row[0]) == "" {
-				continue
-			}
-			ps = append(ps, period{Start: strings.TrimSpace(row[1]), End: strings.TrimSpace(row[2])})
-		}
-		st.Periods = ps
-		st.Slots = len(ps)
-		if err := a.saveSettings(schoolID, st); err != nil {
-			return count, err
-		}
-		count = len(ps)
-	default:
-		return 0, fmt.Errorf("unknown entity %q", entity)
-	}
-	return count, nil
-}
-
 // ---- School settings (grid size + bell schedule) ----
 
 type period struct {
@@ -830,6 +572,14 @@ func (a *App) ExportPDF(schoolID int, optionsJSON string) (string, error) {
 		for _, e := range entries {
 			hasLessons[e.ClassID] = true
 		}
+		// Делёные уроки: записи расписания лежат на подгруппах —
+		// считаем, что у родителя есть уроки, если записи есть хотя бы
+		// у одной его подгруппы (иначе «вся школа» выдавала пустой PDF).
+		for _, c := range cs {
+			if c.SubgroupOf != nil && hasLessons[c.ID] {
+				hasLessons[*c.SubgroupOf] = true
+			}
+		}
 		roomName := func(roomID int) string {
 			for _, r := range rs {
 				if r.ID == roomID {
@@ -881,7 +631,8 @@ func (a *App) ExportPDF(schoolID int, optionsJSON string) (string, error) {
 		busyC := map[occKey][]int{}
 		busyR := map[occKey][]int{}
 		// Кабинет: уроки одной семьи класса (родитель + его подгруппы)
-		// могут делить кабинет — половины класса вмещаются.
+		// могут делить кабинет — половины класса вмещаются. Конфликт —
+		// только если время делит ДРУГАЯ семья.
 		familyOf := map[int]int{} // classID → родительский класс (или себя)
 		for _, c := range cs {
 			if c.SubgroupOf != nil {
@@ -890,13 +641,15 @@ func (a *App) ExportPDF(schoolID int, optionsJSON string) (string, error) {
 				familyOf[c.ID] = c.ID
 			}
 		}
+		entryClass := map[int]int{} // entryID → classID (семейное исключение кабинетов)
 		for _, e := range entries {
+			entryClass[e.ID] = e.ClassID
 			k := occKey{e.TeacherID, e.DayOfWeek, e.Timeslot}
 			busyT[k] = append(busyT[k], e.ID)
 			k = occKey{e.ClassID, e.DayOfWeek, e.Timeslot}
 			busyC[k] = append(busyC[k], e.ID)
 			if e.RoomID != 0 {
-				k = occKey{familyOf[e.ClassID], e.DayOfWeek, e.Timeslot}
+				k = occKey{e.RoomID, e.DayOfWeek, e.Timeslot}
 				busyR[k] = append(busyR[k], e.ID)
 			}
 		}
@@ -916,6 +669,18 @@ func (a *App) ExportPDF(schoolID int, optionsJSON string) (string, error) {
 		}
 		for _, ids := range busyR {
 			if len(ids) > 1 {
+				// Половины одной семьи (делёный урок) легально делят
+				// кабинет; разные семьи в одном кабинете — конфликт.
+				sameFamily := true
+				for i := 1; i < len(ids); i++ {
+					if familyOf[entryClass[ids[i]]] != familyOf[entryClass[ids[0]]] {
+						sameFamily = false
+						break
+					}
+				}
+				if sameFamily {
+					continue
+				}
 				for _, id := range ids {
 					conflicts[id] = true
 				}
@@ -1112,7 +877,6 @@ func (a *App) ExportPDF(schoolID int, optionsJSON string) (string, error) {
 		TeacherName:  teachName,
 		RoomName:     roomName,
 		SubjectColor: subjectColor,
-		GeneratedOn:  time.Now().Format("02.01.2006"),
 	}
 
 	pdfBytes, err := pdf.Render(po)

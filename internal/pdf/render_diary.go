@@ -169,23 +169,6 @@ func drawPrintCellText(pdf *gopdf.GoPdf, opts Options, cell Cell, x, y, w, h flo
 	ascCenterLines(pdf, x, y, w, h, lines)
 }
 
-// ascTimetableFooter prints the aSc-style footer: "timetable generated
-// <date>" on the left, the application name on the right.
-func ascTimetableFooter(pdf *gopdf.GoPdf, opts Options, pageW, pageH, margin float64, gray string) {
-	y := pageH - margin + 1.2
-	setFont(pdf, "DejaVu", 6.5)
-	r, g, b := hexToRGB(gray)
-	pdf.SetTextColor(r, g, b)
-	pdf.SetX(margin)
-	pdf.SetY(y)
-	_ = pdf.Text("timetable generated " + opts.GeneratedOn)
-	right := "Timetable"
-	w := textWidthMM(pdf, right)
-	pdf.SetX(pageW - margin - w)
-	pdf.SetY(y)
-	_ = pdf.Text(right)
-}
-
 // renderASCPrintPages prints each row (class, teacher or room) on its
 // own page in the unified aSc style. The grid is compact — the row
 // height and column width are capped, the table is centered, and the
@@ -200,7 +183,6 @@ func renderASCPrintPages(pdf *gopdf.GoPdf, opts Options, th ascTheme, dayIdx []i
 		maxColW = 45.0
 	)
 	daysN := len(dayIdx)
-	mid := "#555555"
 
 	for pageNo, row := range opts.Rows {
 		if pageNo > 0 {
@@ -216,6 +198,6 @@ func renderASCPrintPages(pdf *gopdf.GoPdf, opts Options, th ascTheme, dayIdx []i
 		startX := margin + (availW-tableW)/2
 
 		drawASCPrintTable(pdf, opts, row, startX, tableTop, dayColW, colW, rowH, hdrH, dayIdx, opts.Slots)
-		ascTimetableFooter(pdf, opts, pageW, pageH, margin, mid)
+		ascPageFooter(pdf, opts, th, pageW, pageH, margin, pageNo+1, len(opts.Rows))
 	}
 }

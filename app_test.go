@@ -23,7 +23,10 @@ func newTestApp(t *testing.T) *App {
 	return &App{ctx: context.Background(), store: store}
 }
 
-func TestRefsCSVImportExport(t *testing.T) {
+// Справочники больше не возят CSV: экспорт/импорт — обычный JSON через
+// те же Create*/List*, что и UI. Тест проверяет поток создания по именам
+// (как это делает JSON-импорт во фронтенде) и согласованность листингов.
+func TestRefsJSONFlow(t *testing.T) {
 	a := newTestApp(t)
 	sc, err := a.CreateSchool("Тест")
 	if err != nil {
@@ -32,48 +35,47 @@ func TestRefsCSVImportExport(t *testing.T) {
 	id := sc.ID
 
 	// teachers
-	n, err := a.ImportRefsCSV(id, "teachers", "name,short_name,max_hours_per_week\nИванов,Ив,30\nПетрова,Пт,25\n")
-	if err != nil {
-		t.Fatalf("import teachers: %v", err)
+	if _, err := a.CreateTeacher(domain.Teacher{SchoolID: id, Name: "Иванов", ShortName: "Ив", MaxHoursPerWeek: 30}); err != nil {
+		t.Fatalf("CreateTeacher: %v", err)
 	}
-	if n != 2 {
-		t.Fatalf("expected 2 teachers, got %d", n)
-	}
-
-	// classes + subjects
-	if _, err := a.ImportRefsCSV(id, "classes", "name,grade,student_count,subgroup_of\n10А,10,25,\n"); err != nil {
-		t.Fatalf("import classes: %v", err)
-	}
-	if _, err := a.ImportRefsCSV(id, "subjects", "name,short_name,requires_room_type\nМатем,Мат,any\n"); err != nil {
-		t.Fatalf("import subjects: %v", err)
+	if _, err := a.CreateTeacher(domain.Teacher{SchoolID: id, Name: "Петрова", ShortName: "Пт", MaxHoursPerWeek: 25}); err != nil {
+		t.Fatalf("CreateTeacher: %v", err)
 	}
 
-	// lessons (resolved by name)
-	n, err = a.ImportRefsCSV(id, "lessons", "class,subject,teacher,hours_per_week,min_gap_days\n10А,Матем,Иванов,5,1\n")
+	// class + subject
+	cls, err := a.CreateClass(domain.SchoolClass{SchoolID: id, Name: "10А"})
 	if err != nil {
-		t.Fatalf("import lessons: %v", err)
+		t.Fatalf("CreateClass: %v", err)
 	}
-	if n != 1 {
-		t.Fatalf("expected 1 lesson, got %d", n)
+	sub, err := a.CreateSubject(domain.Subject{SchoolID: id, Name: "Матем", ShortName: "Мат", RequiresRoomType: "any"})
+	if err != nil {
+		t.Fatalf("CreateSubject: %v", err)
 	}
 
-	// export lessons and verify round-trip content
-	csv, err := a.ExportRefsCSV(id, "lessons")
-	if err != nil {
-		t.Fatalf("export lessons: %v", err)
-	}
-	want := "10А,Матем,Иванов,5,1"
-	if !containsLine(csv, want) {
-		t.Fatalf("exported lessons missing %q, got:\n%s", want, csv)
+	ts, err := a.ListTeachers(id)
+	if err != nil || len(ts) != 2 {
+		t.Fatalf("ListTeachers: %v, n=%d", err, len(ts))
 	}
 
-	// export teachers keeps the data
-	tcsv, err := a.ExportRefsCSV(id, "teachers")
-	if err != nil {
-		t.Fatalf("export teachers: %v", err)
+	// lesson resolved by the teacher's name, как JSON-импорт во фронтенде
+	teachID := 0
+	for _, tt := range ts {
+		if tt.Name == "Иванов" {
+			teachID = tt.ID
+		}
 	}
-	if !containsLine(tcsv, "Иванов,Ив,30") {
-		t.Fatalf("exported teachers missing row, got:\n%s", tcsv)
+	if teachID == 0 {
+		t.Fatal("teacher Иванов not found")
+	}
+	if _, err := a.CreateLesson(domain.Lesson{SchoolID: id, ClassID: cls.ID, SubjectID: sub.ID, TeacherID: teachID, HoursPerWeek: 5}); err != nil {
+		t.Fatalf("CreateLesson: %v", err)
+	}
+	ls, err := a.ListLessons(id)
+	if err != nil || len(ls) != 1 {
+		t.Fatalf("ListLessons: %v, n=%d", err, len(ls))
+	}
+	if ls[0].ClassID != cls.ID || ls[0].SubjectID != sub.ID || ls[0].TeacherID != teachID || ls[0].HoursPerWeek != 5 {
+		t.Fatalf("lesson mismatch: %+v", ls[0])
 	}
 }
 
@@ -98,10 +100,10 @@ func TestGenerate(t *testing.T) {
 	if _, err := a.CreateSubject(domain.Subject{SchoolID: id, Name: "Физика", ShortName: "Физ", RequiresRoomType: "any"}); err != nil {
 		t.Fatalf("CreateSubject: %v", err)
 	}
-	if _, err := a.CreateClass(domain.SchoolClass{SchoolID: id, Name: "10А", Grade: 10}); err != nil {
+	if _, err := a.CreateClass(domain.SchoolClass{SchoolID: id, Name: "10А"}); err != nil {
 		t.Fatalf("CreateClass: %v", err)
 	}
-	if _, err := a.CreateClass(domain.SchoolClass{SchoolID: id, Name: "10Б", Grade: 10}); err != nil {
+	if _, err := a.CreateClass(domain.SchoolClass{SchoolID: id, Name: "10Б"}); err != nil {
 		t.Fatalf("CreateClass: %v", err)
 	}
 	if _, err := a.CreateRoom(domain.Room{SchoolID: id, Name: "301", RoomType: "any"}); err != nil {
@@ -142,7 +144,7 @@ func TestGenerate(t *testing.T) {
 	for _, ld := range lessonDefs {
 		if _, err := a.CreateLesson(domain.Lesson{
 			SchoolID: id, ClassID: cMap[ld.cls], SubjectID: sMap[ld.subj],
-			TeacherID: tMap[ld.teach], HoursPerWeek: ld.hours, MinGapDays: 1,
+			TeacherID: tMap[ld.teach], HoursPerWeek: ld.hours,
 		}); err != nil {
 			t.Fatalf("CreateLesson %v: %v", ld, err)
 		}
@@ -276,7 +278,7 @@ func TestExportImportRoundTripPreservesSchedule(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	lesson, err := source.CreateLesson(domain.Lesson{SchoolID: school.ID, ClassID: child.ID, SubjectID: subject.ID, TeacherID: teacher.ID, HoursPerWeek: 3, MinGapDays: 1})
+	lesson, err := source.CreateLesson(domain.Lesson{SchoolID: school.ID, ClassID: child.ID, SubjectID: subject.ID, TeacherID: teacher.ID, HoursPerWeek: 3})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -370,7 +372,7 @@ func TestSwapEntriesIntegration(t *testing.T) {
 	a.CreateSubject(domain.Subject{SchoolID: id, Name: "Математика"})
 	a.CreateClass(domain.SchoolClass{SchoolID: id, Name: "10А"})
 	a.CreateRoom(domain.Room{SchoolID: id, Name: "301"})
-	lesson, err := a.CreateLesson(domain.Lesson{SchoolID: id, ClassID: 1, SubjectID: 1, TeacherID: te.ID, HoursPerWeek: 5, MinGapDays: 1})
+	lesson, err := a.CreateLesson(domain.Lesson{SchoolID: id, ClassID: 1, SubjectID: 1, TeacherID: te.ID, HoursPerWeek: 5})
 	if err != nil {
 		t.Fatalf("CreateLesson: %v", err)
 	}
@@ -452,7 +454,7 @@ func TestExportPDF(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateSubject: %v", err)
 	}
-	cls, err := a.CreateClass(domain.SchoolClass{SchoolID: id, Name: "10А", Grade: 10})
+	cls, err := a.CreateClass(domain.SchoolClass{SchoolID: id, Name: "10А"})
 	if err != nil {
 		t.Fatalf("CreateClass: %v", err)
 	}
@@ -460,7 +462,7 @@ func TestExportPDF(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateRoom: %v", err)
 	}
-	lsn, err := a.CreateLesson(domain.Lesson{SchoolID: id, ClassID: cls.ID, SubjectID: sbj.ID, TeacherID: te.ID, HoursPerWeek: 3, MinGapDays: 1})
+	lsn, err := a.CreateLesson(domain.Lesson{SchoolID: id, ClassID: cls.ID, SubjectID: sbj.ID, TeacherID: te.ID, HoursPerWeek: 3})
 	if err != nil {
 		t.Fatalf("CreateLesson: %v", err)
 	}

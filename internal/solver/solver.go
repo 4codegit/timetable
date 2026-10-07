@@ -2,7 +2,6 @@ package solver
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"math/rand"
 	"sort"
@@ -527,7 +526,7 @@ func buildOccurrences(in SolveInput, days, slots int) []Occurrence {
 			h = 1
 		}
 		subj := in.Subjects[l.SubjectID]
-		rooms := allowedRooms(l, subj, in.Rooms)
+		rooms := allowedRooms(subj, in.Rooms)
 		for i := 0; i < h; i++ {
 			occ = append(occ, Occurrence{Lesson: l, Index: i, RoomChoices: rooms})
 		}
@@ -535,14 +534,8 @@ func buildOccurrences(in SolveInput, days, slots int) []Occurrence {
 	return occ
 }
 
-func allowedRooms(l domain.Lesson, subj domain.Subject, rooms []domain.Room) []int {
-	var preferred []int
-	if l.PreferredRooms != "" && l.PreferredRooms != "[]" {
-		_ = json.Unmarshal([]byte(l.PreferredRooms), &preferred)
-	}
-	if len(preferred) > 0 {
-		return preferred
-	}
+// allowedRooms filters rooms by the subject's required room type.
+func allowedRooms(subj domain.Subject, rooms []domain.Room) []int {
 	rt := subj.RequiresRoomType
 	if rt == "" {
 		rt = "any"
@@ -564,29 +557,6 @@ func allowedRooms(l domain.Lesson, subj domain.Subject, rooms []domain.Room) []i
 // softViolations counts soft-constraint penalties (gaps between same-class lessons, preferences).
 func softViolations(in SolveInput, entries []domain.ScheduleEntry, days int) int {
 	v := 0
-	classDays := map[int]map[int]bool{}
-	for _, e := range entries {
-		if classDays[e.ClassID] == nil {
-			classDays[e.ClassID] = map[int]bool{}
-		}
-		classDays[e.ClassID][e.DayOfWeek] = true
-	}
-	// min_gap_days penalty: a class should not be scheduled every day if min_gap requested
-	lessonByClass := map[int]int{} // class -> lessons count
-	for _, l := range in.Lessons {
-		lessonByClass[l.ClassID]++
-	}
-	for classID, dmap := range classDays {
-		// if 6 days used and there are lessons, that's fine; gap only matters for few-hours lessons
-		if len(dmap) >= days {
-			// every day used; if any lesson for this class has min_gap_days>1, penalize lightly
-			for _, l := range in.Lessons {
-				if l.ClassID == classID && l.MinGapDays > 1 {
-					v += 1
-				}
-			}
-		}
-	}
 	// soft constraints: prefer_morning / max_gaps style => small penalties for afternoon clustering
 	for _, c := range in.Constraints {
 		if c.IsHard {
@@ -758,6 +728,7 @@ func classFree(cset []int, classBusy map[int][][]int, d, s int, subj int) bool {
 		if busySubj == subj {
 			continue // делёный предмет: обе половинки параллельно
 		}
+		return false // слот занят другим предметом этого класса
 	}
 	return true
 }

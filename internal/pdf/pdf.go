@@ -98,10 +98,6 @@ type Options struct {
 	RoomName     func(id int) string
 	ClassName    func(id int) string // used by the "teacher" mode cells
 	SubjectColor func(id int) string // hex like "#dbeafe"
-
-	// GeneratedOn is a human-readable date (e.g. "05.09.2026") printed in
-	// the page footer. Empty string = no footer date.
-	GeneratedOn string
 }
 
 // Period is one bell slot.

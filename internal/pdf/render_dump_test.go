@@ -42,7 +42,6 @@ func TestDumpSamplesForVisualCheck(t *testing.T) {
 		SubjectColor: func(id int) string {
 			return [6]string{"#dbeafe", "#dcfce7", "#fef9c3", "#fae8ff", "#ffedd5", "#cffafe"}[id%6]
 		},
-		GeneratedOn: "05.09.2026",
 	}
 	b, err := Render(poster)
 	if err != nil {

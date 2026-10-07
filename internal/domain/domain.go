@@ -30,7 +30,6 @@ type SchoolClass struct {
 	ID         int    `json:"id"`
 	SchoolID   int    `json:"school_id"`
 	Name       string `json:"name"`
-	Grade      int    `json:"grade"`
 	RoomID     int    `json:"room_id"` // домашний кабинет класса
 	SubgroupOf *int   `json:"subgroup_of,omitempty"`
 }
@@ -45,14 +44,12 @@ type Room struct {
 
 // Lesson is one scheduled course instance in the study plan.
 type Lesson struct {
-	ID             int    `json:"id"`
-	SchoolID       int    `json:"school_id"`
-	ClassID        int    `json:"class_id"`
-	SubjectID      int    `json:"subject_id"`
-	TeacherID      int    `json:"teacher_id"`
-	HoursPerWeek   int    `json:"hours_per_week"`
-	MinGapDays     int    `json:"min_gap_days"`
-	PreferredRooms string `json:"preferred_rooms"`
+	ID           int `json:"id"`
+	SchoolID     int `json:"school_id"`
+	ClassID      int `json:"class_id"`
+	SubjectID    int `json:"subject_id"`
+	TeacherID    int `json:"teacher_id"`
+	HoursPerWeek int `json:"hours_per_week"`
 }
 
 // Constraint is a hard or soft rule applied to an entity/time range.

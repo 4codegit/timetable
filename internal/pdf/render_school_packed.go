@@ -28,8 +28,9 @@ func renderSchoolPacked(pdf *gopdf.GoPdf, opts Options, th ascTheme, dayIdx []in
 	availW := pageW - margin*2
 	availH := pageH - tableTop - margin - footerH
 
-	// Подбор сетки: минимум страниц, затем максимум меньшей из сторон
-	// ячейки, при равенстве — больше колонок.
+	// Подбор сетки: минимум страниц, затем максимум площади ячейки
+	// (min() сравнивал неверно: после насыщения rowH выигрывал вариант
+	// с большим числом узких колонок), при равенстве — меньше колонок.
 	type gridCand struct {
 		cols, perCol, pages int
 		score               float64
@@ -50,7 +51,7 @@ func renderSchoolPacked(pdf *gopdf.GoPdf, opts Options, th ascTheme, dayIdx []in
 				cols:   cols,
 				perCol: perCol,
 				pages:  (n + capacity - 1) / capacity,
-				score:  minF(colW, rowH),
+				score:  colW * rowH,
 			})
 		}
 	}
@@ -61,7 +62,7 @@ func renderSchoolPacked(pdf *gopdf.GoPdf, opts Options, th ascTheme, dayIdx []in
 	for _, c := range cands[1:] {
 		if c.pages < best.pages ||
 			(c.pages == best.pages && c.score > best.score+1e-9) ||
-			(c.pages == best.pages && c.score > best.score-1e-9 && c.cols > best.cols) {
+			(c.pages == best.pages && c.score > best.score-1e-9 && c.cols < best.cols) {
 			best = c
 		}
 	}
@@ -75,10 +76,9 @@ func renderSchoolPacked(pdf *gopdf.GoPdf, opts Options, th ascTheme, dayIdx []in
 	totalPages := (n + perPage - 1) / perPage
 
 	startX := margin + (availW-(float64(cols)*tableW+float64(cols-1)*gap))/2
-	startY := tableTop + (availH-(float64(perCol)*tableH+float64(perCol-1)*gap))/2
-	if startY < tableTop {
-		startY = tableTop
-	}
+	// Таблицы прижаты к шапке: вертикальное центрирование оставляло
+	// пустоту в пол-листа, когда классов мало.
+	startY := tableTop
 
 	firstPage := true
 	globalPage := 0

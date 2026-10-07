@@ -131,25 +131,21 @@ func ascPageHeader(pdf *gopdf.GoPdf, opts Options, th ascTheme, bigTitle, subtit
 	return ruleY + 2.8
 }
 
-// ascPageFooter prints the print date at the left and "стр. N из M" at
-// the right, below the content area.
+// ascPageFooter prints "стр. N из M" at the right, below the content
+// area. Одностраничные документы нумерации не получают.
 func ascPageFooter(pdf *gopdf.GoPdf, opts Options, th ascTheme, pageW, pageH, margin float64, pageNo, total int) {
+	if total <= 1 {
+		return
+	}
 	y := pageH - margin + 1.6
 	setFont(pdf, "DejaVu", 8)
 	r, g, b := hexToRGB(th.grayText)
 	pdf.SetTextColor(r, g, b)
-	if opts.GeneratedOn != "" {
-		pdf.SetX(margin)
-		pdf.SetY(y)
-		_ = pdf.Text("Отпечатано: " + opts.GeneratedOn)
-	}
-	if total > 0 {
-		right := "стр. " + itoa(pageNo) + " из " + itoa(total)
-		w := textWidthMM(pdf, right)
-		pdf.SetX(pageW - margin - w)
-		pdf.SetY(y)
-		_ = pdf.Text(right)
-	}
+	right := "стр. " + itoa(pageNo) + " из " + itoa(total)
+	w := textWidthMM(pdf, right)
+	pdf.SetX(pageW - margin - w)
+	pdf.SetY(y)
+	_ = pdf.Text(right)
 }
 
 // itoa is a tiny helper to keep footer formatting allocation-light.

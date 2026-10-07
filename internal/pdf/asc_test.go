@@ -52,7 +52,6 @@ func ascTestOptions(mode string, rows []Row, pageSize, orient string, days, slot
 			palette := []string{"#dbeafe", "#dcfce7", "#fef9c3", "#fae8ff", "#ffedd5", "#cffafe", "#fecaca", "#e0e7ff"}
 			return palette[(id-1)%len(palette)]
 		},
-		GeneratedOn: "05.09.2026",
 	}
 }
 

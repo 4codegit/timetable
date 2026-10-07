@@ -67,7 +67,6 @@ func (s *Store) migrate() error {
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			school_id INTEGER REFERENCES schools(id) ON DELETE CASCADE,
 			name TEXT NOT NULL,
-			grade INTEGER DEFAULT 0,
 			room_id INTEGER REFERENCES rooms(id),
 			subgroup_of INTEGER REFERENCES classes(id) ON DELETE CASCADE
 		)`,
@@ -83,9 +82,7 @@ func (s *Store) migrate() error {
 			class_id INTEGER REFERENCES classes(id) ON DELETE CASCADE,
 			subject_id INTEGER REFERENCES subjects(id) ON DELETE CASCADE,
 			teacher_id INTEGER REFERENCES teachers(id) ON DELETE CASCADE,
-			hours_per_week INTEGER NOT NULL DEFAULT 1,
-			min_gap_days INTEGER DEFAULT 1,
-			preferred_rooms TEXT DEFAULT '[]'
+			hours_per_week INTEGER NOT NULL DEFAULT 1
 		)`,
 		`CREATE TABLE IF NOT EXISTS constraints (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -159,7 +156,7 @@ func (s *Store) migrate() error {
 		return found
 	}
 
-	if colExists("classes", "student_count") {
+	if colExists("classes", "student_count") || colExists("classes", "grade") {
 		// В старой таблице room_id могло не быть — копируем NULL.
 		roomSel := "NULL"
 		if colExists("classes", "room_id") {
@@ -169,10 +166,9 @@ func (s *Store) migrate() error {
 			`id INTEGER PRIMARY KEY AUTOINCREMENT,
 			 school_id INTEGER REFERENCES schools(id) ON DELETE CASCADE,
 			 name TEXT NOT NULL,
-			 grade INTEGER DEFAULT 0,
 			 room_id INTEGER REFERENCES rooms(id),
 			 subgroup_of INTEGER REFERENCES classes(id) ON DELETE CASCADE`,
-			`INSERT INTO classes_new SELECT id, school_id, name, grade, `+roomSel+`, subgroup_of FROM classes`); err != nil {
+			`INSERT INTO classes_new SELECT id, school_id, name, `+roomSel+`, subgroup_of FROM classes`); err != nil {
 			return err
 		}
 	}
@@ -197,17 +193,15 @@ func (s *Store) migrate() error {
 			return err
 		}
 	}
-	if colExists("lessons", "can_split") {
+	if colExists("lessons", "can_split") || colExists("lessons", "min_gap_days") || colExists("lessons", "preferred_rooms") {
 		if err := rebuild("lessons",
 			`id INTEGER PRIMARY KEY AUTOINCREMENT,
 			 school_id INTEGER REFERENCES schools(id) ON DELETE CASCADE,
 			 class_id INTEGER REFERENCES classes(id) ON DELETE CASCADE,
 			 subject_id INTEGER REFERENCES subjects(id) ON DELETE CASCADE,
 			 teacher_id INTEGER REFERENCES teachers(id) ON DELETE CASCADE,
-			 hours_per_week INTEGER NOT NULL DEFAULT 1,
-			 min_gap_days INTEGER DEFAULT 1,
-			 preferred_rooms TEXT DEFAULT '[]'`,
-			`INSERT INTO lessons_new SELECT id, school_id, class_id, subject_id, teacher_id, hours_per_week, min_gap_days, preferred_rooms FROM lessons`); err != nil {
+			 hours_per_week INTEGER NOT NULL DEFAULT 1`,
+			`INSERT INTO lessons_new SELECT id, school_id, class_id, subject_id, teacher_id, hours_per_week FROM lessons`); err != nil {
 			return err
 		}
 	}
@@ -390,8 +384,8 @@ func (s *Store) ListSubjects(schoolID int) ([]domain.Subject, error) {
 // ---- Classes ----
 
 func (s *Store) CreateClass(c domain.SchoolClass) (*domain.SchoolClass, error) {
-	res, err := s.db.Exec(`INSERT INTO classes (school_id, name, grade, room_id, subgroup_of) VALUES (?,?,?,?,?)`,
-		c.SchoolID, c.Name, c.Grade, nullableID(c.RoomID), c.SubgroupOf)
+	res, err := s.db.Exec(`INSERT INTO classes (school_id, name, room_id, subgroup_of) VALUES (?,?,?,?)`,
+		c.SchoolID, c.Name, nullableID(c.RoomID), c.SubgroupOf)
 	if err != nil {
 		return nil, err
 	}
@@ -401,7 +395,7 @@ func (s *Store) CreateClass(c domain.SchoolClass) (*domain.SchoolClass, error) {
 }
 
 func (s *Store) ListClasses(schoolID int) ([]domain.SchoolClass, error) {
-	rows, err := s.db.Query(`SELECT id, school_id, name, grade, COALESCE(room_id, 0), subgroup_of FROM classes WHERE school_id=?`, schoolID)
+	rows, err := s.db.Query(`SELECT id, school_id, name, COALESCE(room_id, 0), subgroup_of FROM classes WHERE school_id=?`, schoolID)
 	if err != nil {
 		return nil, err
 	}
@@ -410,7 +404,7 @@ func (s *Store) ListClasses(schoolID int) ([]domain.SchoolClass, error) {
 	for rows.Next() {
 		var c domain.SchoolClass
 		var sub sql.NullInt32
-		if err := rows.Scan(&c.ID, &c.SchoolID, &c.Name, &c.Grade, &c.RoomID, &sub); err != nil {
+		if err := rows.Scan(&c.ID, &c.SchoolID, &c.Name, &c.RoomID, &sub); err != nil {
 			return nil, err
 		}
 		if sub.Valid {
@@ -462,8 +456,8 @@ func (s *Store) ListRooms(schoolID int) ([]domain.Room, error) {
 // ---- Lessons ----
 
 func (s *Store) CreateLesson(l domain.Lesson) (*domain.Lesson, error) {
-	res, err := s.db.Exec(`INSERT INTO lessons (school_id, class_id, subject_id, teacher_id, hours_per_week, min_gap_days, preferred_rooms) VALUES (?,?,?,?,?,?,?)`,
-		l.SchoolID, l.ClassID, l.SubjectID, l.TeacherID, l.HoursPerWeek, l.MinGapDays, orDefault(l.PreferredRooms, "[]"))
+	res, err := s.db.Exec(`INSERT INTO lessons (school_id, class_id, subject_id, teacher_id, hours_per_week) VALUES (?,?,?,?,?)`,
+		l.SchoolID, l.ClassID, l.SubjectID, l.TeacherID, l.HoursPerWeek)
 	if err != nil {
 		return nil, err
 	}
@@ -473,7 +467,7 @@ func (s *Store) CreateLesson(l domain.Lesson) (*domain.Lesson, error) {
 }
 
 func (s *Store) ListLessons(schoolID int) ([]domain.Lesson, error) {
-	rows, err := s.db.Query(`SELECT id, school_id, class_id, subject_id, teacher_id, hours_per_week, min_gap_days, preferred_rooms FROM lessons WHERE school_id=?`, schoolID)
+	rows, err := s.db.Query(`SELECT id, school_id, class_id, subject_id, teacher_id, hours_per_week FROM lessons WHERE school_id=?`, schoolID)
 	if err != nil {
 		return nil, err
 	}
@@ -481,7 +475,7 @@ func (s *Store) ListLessons(schoolID int) ([]domain.Lesson, error) {
 	var out []domain.Lesson
 	for rows.Next() {
 		var l domain.Lesson
-		if err := rows.Scan(&l.ID, &l.SchoolID, &l.ClassID, &l.SubjectID, &l.TeacherID, &l.HoursPerWeek, &l.MinGapDays, &l.PreferredRooms); err != nil {
+		if err := rows.Scan(&l.ID, &l.SchoolID, &l.ClassID, &l.SubjectID, &l.TeacherID, &l.HoursPerWeek); err != nil {
 			return nil, err
 		}
 		out = append(out, l)
@@ -495,8 +489,8 @@ func (s *Store) DeleteLesson(id int) error {
 }
 
 func (s *Store) UpdateLesson(l domain.Lesson) error {
-	_, err := s.db.Exec(`UPDATE lessons SET class_id=?, subject_id=?, teacher_id=?, hours_per_week=?, min_gap_days=?, preferred_rooms=? WHERE id=?`,
-		l.ClassID, l.SubjectID, l.TeacherID, l.HoursPerWeek, l.MinGapDays, orDefault(l.PreferredRooms, "[]"), l.ID)
+	_, err := s.db.Exec(`UPDATE lessons SET class_id=?, subject_id=?, teacher_id=?, hours_per_week=? WHERE id=?`,
+		l.ClassID, l.SubjectID, l.TeacherID, l.HoursPerWeek, l.ID)
 	return err
 }
 
@@ -521,8 +515,8 @@ func nullableID(id int) interface{} {
 }
 
 func (s *Store) UpdateClass(c domain.SchoolClass) error {
-	_, err := s.db.Exec(`UPDATE classes SET name=?, grade=?, room_id=? WHERE id=?`,
-		c.Name, c.Grade, nullableID(c.RoomID), c.ID)
+	_, err := s.db.Exec(`UPDATE classes SET name=?, room_id=? WHERE id=?`,
+		c.Name, nullableID(c.RoomID), c.ID)
 	return err
 }
 

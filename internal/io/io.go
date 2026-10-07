@@ -221,7 +221,6 @@ func ImportAll(s *db.Store, snap *Snapshot) (*domain.School, error) {
 			if l.TeacherID, ok = teacherIDMap[l.TeacherID]; !ok {
 				return fmt.Errorf("lesson references a missing teacher")
 			}
-			l.PreferredRooms = orEmptyJSON(l.PreferredRooms)
 			created, err := tx.CreateLesson(l)
 			if err != nil {
 				return fmt.Errorf("create lesson: %w", err)

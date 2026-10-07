@@ -35,7 +35,6 @@ func TestRenderPosterSmoke(t *testing.T) {
 		RoomName:     func(int) string { return "301" },
 		ClassName:    func(int) string { return "5А" },
 		SubjectColor: func(int) string { return "#dbeafe" },
-		GeneratedOn:  "05.09.2026",
 	}
 	b, err := Render(opts)
 	if err != nil {
@@ -75,7 +74,6 @@ func TestRenderCompactSmoke(t *testing.T) {
 		RoomName:     func(int) string { return "203" },
 		ClassName:    func(int) string { return "9В" },
 		SubjectColor: func(int) string { return "#dcfce7" },
-		GeneratedOn:  "05.09.2026",
 	}
 	b, err := Render(opts)
 	if err != nil {

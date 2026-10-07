@@ -7,7 +7,7 @@
                 CreateConstraint, ListConstraints, DeleteConstraint,
                 DeleteTeacher, DeleteSubject, DeleteClass, DeleteRoom, DeleteScheduleEntry, SaveExport,
                 UpdateTeacher, UpdateSubject, UpdateClass, UpdateRoom,
-                Generate, GeneratePrecise, MoveEntry, SwapEntries, ReplaceSchedule, ListSchedule, ExportAll, ImportAll, ScheduleCSV, ExportRefsCSV, ImportRefsCSV, GetSchoolSettings, UpdateSchoolSettings, HasPreciseSolver, ExportPDF
+                Generate, GeneratePrecise, MoveEntry, SwapEntries, ReplaceSchedule, ListSchedule, ExportAll, ImportAll, ScheduleCSV, GetSchoolSettings, UpdateSchoolSettings, HasPreciseSolver, ExportPDF
         } from "../wailsjs/go/main/App";
         import { onMount } from "svelte";
 
@@ -23,9 +23,9 @@
         // form models
         let t = { name: "", short_name: "", max_hours_per_week: 30 };
         let s = { name: "", short_name: "", requires_room_type: "any" };
-        let c = { name: "", grade: 0, room_id: 0, subgroup_of: null };
+        let c = { name: "", room_id: 0, subgroup_of: null };
         let r = { name: "", room_type: "any" };
-        let l = { class_id: 0, subject_id: 0, teacher_id: 0, hours_per_week: 1, min_gap_days: 1, can_split: false, preferred_rooms: "[]" };
+        let l = { class_id: 0, subject_id: 0, teacher_id: 0, hours_per_week: 1 };
         let curClass = 0;
         // Инлайн-редактирование справочников: ✎ переводит строку в режим
         // правки, ✓ сохраняет в БД, ✗ откатывает (перезагрузкой справочников).
@@ -33,9 +33,9 @@
         function startEdit(kind, id) { editing = { kind, id }; }
         async function cancelEdit() { editing = null; await reloadRefs(); }
         async function saveEdit(kind, x) {
-                if (kind === "teacher") await UpdateTeacher({ id: x.id, school_id: x.school_id, name: x.name, short_name: x.short_name, max_hours_per_week: x.max_hours_per_week || 0, preferences_json: x.preferences_json || "{}" });
+                if (kind === "teacher") await UpdateTeacher({ id: x.id, school_id: x.school_id, name: x.name, short_name: x.short_name, max_hours_per_week: x.max_hours_per_week || 0 });
                 else if (kind === "subject") await UpdateSubject({ id: x.id, school_id: x.school_id, name: x.name, short_name: x.short_name, requires_room_type: x.requires_room_type || "any" });
-                else if (kind === "class") await UpdateClass({ id: x.id, school_id: x.school_id, name: x.name, grade: x.grade || 0, room_id: x.room_id || 0 });
+                else if (kind === "class") await UpdateClass({ id: x.id, school_id: x.school_id, name: x.name, room_id: x.room_id || 0 });
                 else if (kind === "room") await UpdateRoom({ id: x.id, school_id: x.school_id, name: x.name, room_type: x.room_type || "any" });
                 editing = null;
                 await reloadRefs();
@@ -418,7 +418,7 @@
         async function addClass() {
                 if (!c.name.trim()) { flash("Введите название класса"); return; }
                 await CreateClass({ ...c, school_id: activeSchoolID });
-                c = { name: "", grade: 0, room_id: 0, subgroup_of: null };
+                c = { name: "", room_id: 0, subgroup_of: null };
                 await reloadRefs();
         }
         async function addRoom() {
@@ -431,18 +431,18 @@
                 if (!l.class_id || !l.subject_id || !l.teacher_id) { flash("Выберите класс, предмет и учителя"); return; }
                 const hours = Math.max(1, Math.min(40, l.hours_per_week || 1));
                 await CreateLesson({ ...l, school_id: activeSchoolID, hours_per_week: hours });
-                l = { class_id: 0, subject_id: 0, teacher_id: 0, hours_per_week: 1, min_gap_days: 1, can_split: false, preferred_rooms: "[]" };
+                l = { class_id: 0, subject_id: 0, teacher_id: 0, hours_per_week: 1 };
                 await reloadRefs();
         }
         async function addLessonForClass() {
                 if (!curClass || !l.subject_id || !l.teacher_id) { flash("Выберите класс, предмет и учителя"); return; }
-                await CreateLesson({ school_id: activeSchoolID, class_id: curClass, subject_id: l.subject_id, teacher_id: l.teacher_id, hours_per_week: l.hours_per_week || 1, min_gap_days: l.min_gap_days || 1, can_split: false, preferred_rooms: "[]" });
-                l = { class_id: 0, subject_id: 0, teacher_id: 0, hours_per_week: 1, min_gap_days: 1, can_split: false, preferred_rooms: "[]" };
+                await CreateLesson({ school_id: activeSchoolID, class_id: curClass, subject_id: l.subject_id, teacher_id: l.teacher_id, hours_per_week: l.hours_per_week || 1 });
+                l = { class_id: 0, subject_id: 0, teacher_id: 0, hours_per_week: 1 };
                 await reloadRefs();
         }
         async function updateLesson(x) {
                 try {
-                        await UpdateLesson({ id: x.id, school_id: x.school_id, class_id: x.class_id, subject_id: x.subject_id, teacher_id: x.teacher_id, hours_per_week: x.hours_per_week || 1, min_gap_days: x.min_gap_days || 1, can_split: x.can_split, preferred_rooms: x.preferred_rooms || "[]" });
+                        await UpdateLesson({ id: x.id, school_id: x.school_id, class_id: x.class_id, subject_id: x.subject_id, teacher_id: x.teacher_id, hours_per_week: x.hours_per_week || 1 });
                 } catch (e) { flash("Ошибка обновления урока: " + (e && e.message ? e.message : e)); }
         }
         async function removeLesson(id) { if (!await confirmAction("Удалить урок?")) return; await pushHistory(); await DeleteLesson(id); await reloadRefs(); flash("Урок удалён"); }
@@ -946,21 +946,65 @@
                 saveModal = null;
         }
         function cancelSave() { saveModal = null; }
-        async function downloadRefsCSV(entity) {
-                const csv = await ExportRefsCSV(activeSchoolID, entity);
-                await saveFile(entity + ".csv", csv, "text/csv", false);
+        // Справочники гоняются обычным JSON, не CSV: меньше зависимостей,
+        // формат совпадает с тем, что и так ходит через API. В файл пишем
+        // имена вместо id — файл переносим между школами и базами.
+        async function downloadRefsJSON(entity) {
+                let data;
+                if (entity === "teachers") data = teachers.map((t) => ({ name: t.name, short_name: t.short_name || "", max_hours_per_week: t.max_hours_per_week || 0 }));
+                else if (entity === "subjects") data = subjects.map((s) => ({ name: s.name, short_name: s.short_name || "", requires_room_type: s.requires_room_type || "any" }));
+                else if (entity === "rooms") data = rooms.map((r) => ({ name: r.name, room_type: r.room_type || "any" }));
+                else if (entity === "classes") data = classes.map((c) => ({ name: c.name, room: c.room_id ? (roomName(rooms, c.room_id) || "") : "", subgroup_of: c.subgroup_of ? (className(classes, c.subgroup_of) || "") : "" }));
+                else if (entity === "lessons") data = lessons.map((l) => ({ class: className(classes, l.class_id), subject: subjName(subjects, l.subject_id), teacher: teachName(teachers, l.teacher_id), hours_per_week: l.hours_per_week }));
+                else if (entity === "periods") data = bellPeriods.slice(0, slots).map((p) => ({ start: p.start || "", end: p.end || "" }));
+                else return;
+                await saveFile(entity + ".json", JSON.stringify(data, null, 2), "application/json", false);
         }
-        async function importRefsCSV(entity, e) {
+        async function importRefsJSON(entity, e) {
                 const file = e.target.files && e.target.files[0];
                 if (!file) return;
-                const text = await file.text();
                 try {
-                        const n = await ImportRefsCSV(activeSchoolID, entity, text);
+                        const items = JSON.parse(await file.text());
+                        if (!Array.isArray(items)) throw new Error("ожидался JSON-массив");
+                        let n = 0;
+                        for (const it of items) {
+                                if (entity === "teachers") {
+                                        if (!it.name) continue;
+                                        await CreateTeacher({ school_id: activeSchoolID, name: String(it.name), short_name: String(it.short_name || ""), max_hours_per_week: Number(it.max_hours_per_week) || 30 });
+                                } else if (entity === "subjects") {
+                                        if (!it.name) continue;
+                                        await CreateSubject({ school_id: activeSchoolID, name: String(it.name), short_name: String(it.short_name || ""), requires_room_type: String(it.requires_room_type || "any") });
+                                } else if (entity === "rooms") {
+                                        if (!it.name) continue;
+                                        await CreateRoom({ school_id: activeSchoolID, name: String(it.name), room_type: String(it.room_type || "any") });
+                                } else if (entity === "classes") {
+                                        if (!it.name) continue;
+                                        let room_id = 0;
+                                        if (it.room) { const r = rooms.find((x) => x.name === it.room); if (r) room_id = r.id; }
+                                        let subgroup_of = null;
+                                        if (it.subgroup_of) { const p = classes.find((x) => x.name === it.subgroup_of); if (p) subgroup_of = p.id; }
+                                        const created = await CreateClass({ school_id: activeSchoolID, name: String(it.name), room_id, subgroup_of });
+                                        classes = [...classes, created]; // родитель должен быть виден следующим строкам файла
+                                } else if (entity === "lessons") {
+                                        const c = classes.find((x) => x.name === it.class);
+                                        const s = subjects.find((x) => x.name === it.subject);
+                                        const t = teachers.find((x) => x.name === it.teacher || (x.short_name && x.short_name === it.teacher));
+                                        if (!c || !s || !t) throw new Error("не найдено в справочниках: " + JSON.stringify(it));
+                                        await CreateLesson({ school_id: activeSchoolID, class_id: c.id, subject_id: s.id, teacher_id: t.id, hours_per_week: Number(it.hours_per_week) || 1 });
+                                } else if (entity === "periods") {
+                                        // массив звонков заменяет расписание звонков целиком
+                                        const ps = items.map((p) => ({ start: String(p.start || ""), end: String(p.end || "") }));
+                                        await UpdateSchoolSettings(activeSchoolID, JSON.stringify({ days, slots: ps.length, days_mask: schoolDaysMask, periods: ps }));
+                                        await loadSettings();
+                                        n = ps.length;
+                                        break;
+                                }
+                                n++;
+                        }
                         await reloadRefs();
-                        if (entity === "periods") await loadSettings();
-                        flash("Импортировано строк: " + n);
+                        flash("Импортировано: " + n);
                 } catch (err) {
-                        flash("Ошибка импорта: " + err.message);
+                        flash("Ошибка импорта: " + (err && err.message ? err.message : err));
                 } finally {
                         e.target.value = "";
                 }
@@ -1074,8 +1118,8 @@
                                                 <div class="card-head">
                                                         <h2>Учителя</h2>
                                                         <div class="csvbar">
-                                                                <button class="mini" on:click={() => downloadRefsCSV('teachers')}>⬇ CSV</button>
-                                                                <label class="mini file">⬆<input type="file" accept=".csv" on:change={(e) => importRefsCSV('teachers', e)} /></label>
+                                                                <button class="mini" on:click={() => downloadRefsJSON('teachers')}>⬇ JSON</button>
+                                                                <label class="mini file">⬆<input type="file" accept=".json" on:change={(e) => importRefsJSON('teachers', e)} /></label>
                                                         </div>
                                                 </div>
                                                 <div class="row">
@@ -1103,8 +1147,8 @@
                                                 <div class="card-head">
                                                         <h2>Предметы</h2>
                                                         <div class="csvbar">
-                                                                <button class="mini" on:click={() => downloadRefsCSV('subjects')}>⬇ CSV</button>
-                                                                <label class="mini file">⬆<input type="file" accept=".csv" on:change={(e) => importRefsCSV('subjects', e)} /></label>
+                                                                <button class="mini" on:click={() => downloadRefsJSON('subjects')}>⬇ JSON</button>
+                                                                <label class="mini file">⬆<input type="file" accept=".json" on:change={(e) => importRefsJSON('subjects', e)} /></label>
                                                         </div>
                                                 </div>
                                                 <div class="row">
@@ -1130,13 +1174,12 @@
                                                 <div class="card-head">
                                                         <h2>Классы</h2>
                                                         <div class="csvbar">
-                                                                <button class="mini" on:click={() => downloadRefsCSV('classes')}>⬇ CSV</button>
-                                                                <label class="mini file">⬆<input type="file" accept=".csv" on:change={(e) => importRefsCSV('classes', e)} /></label>
+                                                                <button class="mini" on:click={() => downloadRefsJSON('classes')}>⬇ JSON</button>
+                                                                <label class="mini file">⬆<input type="file" accept=".json" on:change={(e) => importRefsJSON('classes', e)} /></label>
                                                         </div>
                                                 </div>
                                                 <div class="row">
                                                         <input bind:value={c.name} placeholder="10А" />
-                                                        <input type="number" bind:value={c.grade} placeholder="Класс" />
                                                         <select bind:value={c.room_id} title="Домашний кабинет класса"><option value={0}>— без кабинета —</option>{#each rooms as rm}<option value={rm.id}>{rm.name}</option>{/each}</select>
                                                         <select bind:value={c.subgroup_of}><option value={null}>— целый класс —</option>{#each classes as x}<option value={x.id}>{x.name} (подгруппа)</option>{/each}</select>
                                                         <button class="primary" on:click={addClass}>+</button>
@@ -1144,7 +1187,6 @@
                                                 <ul class="list">{#each classes as x}<li>
                                                         {#if editing && editing.kind === "class" && editing.id === x.id}
                                                                 <input class="edit" bind:value={x.name} placeholder="10А" />
-                                                                <input class="edit w-xs" type="number" bind:value={x.grade} title="Номер класса" />
                                                                 <select class="edit" bind:value={x.room_id} title="Домашний кабинет"><option value={0}>— без кабинета —</option>{#each rooms as rm}<option value={rm.id}>{rm.name}</option>{/each}</select>
                                                                 <button class="primary sm" on:click={() => saveEdit("class", x)} title="Сохранить">✓</button>
                                                                 <button class="sm" on:click={cancelEdit} title="Отмена">✗</button>
@@ -1160,8 +1202,8 @@
                                                 <div class="card-head">
                                                         <h2>Кабинеты</h2>
                                                         <div class="csvbar">
-                                                                <button class="mini" on:click={() => downloadRefsCSV('rooms')}>⬇ CSV</button>
-                                                                <label class="mini file">⬆<input type="file" accept=".csv" on:change={(e) => importRefsCSV('rooms', e)} /></label>
+                                                                <button class="mini" on:click={() => downloadRefsJSON('rooms')}>⬇ JSON</button>
+                                                                <label class="mini file">⬆<input type="file" accept=".json" on:change={(e) => importRefsJSON('rooms', e)} /></label>
                                                         </div>
                                                 </div>
                                                 <div class="row">
@@ -1186,8 +1228,8 @@
                                         <div class="card-head">
                                                 <h2>Учебный план (уроки)</h2>
                                                 <div class="csvbar">
-                                                        <button class="mini" on:click={() => downloadRefsCSV('lessons')}>⬇ CSV</button>
-                                                        <label class="mini file">⬆<input type="file" accept=".csv" on:change={(e) => importRefsCSV('lessons', e)} /></label>
+                                                        <button class="mini" on:click={() => downloadRefsJSON('lessons')}>⬇ JSON</button>
+                                                        <label class="mini file">⬆<input type="file" accept=".json" on:change={(e) => importRefsJSON('lessons', e)} /></label>
                                                 </div>
                                         </div>
                                         <div class="lesson-form">
@@ -1279,8 +1321,8 @@
                                                 <label>Уроков в день: <input type="number" min="1" max="14" bind:value={slots} on:change={onSlotsChange} /></label>
                                                 <button class="primary" on:click={saveSettings}>Сохранить</button>
                                                 <span class="csvbar">
-                                                        <button class="mini" on:click={() => downloadRefsCSV('periods')}>⬇ CSV звонков</button>
-                                                        <label class="mini file">⬆<input type="file" accept=".csv" on:change={(e) => importRefsCSV('periods', e)} /></label>
+                                                        <button class="mini" on:click={() => downloadRefsJSON('periods')}>⬇ JSON звонков</button>
+                                                        <label class="mini file">⬆<input type="file" accept=".json" on:change={(e) => importRefsJSON('periods', e)} /></label>
                                                 </span>
                                         </div>
                                         <h3>Расписание звонков</h3>
