@@ -321,9 +321,10 @@ extern "C" ScheduleResult* ortools_solve(
   SatParameters params;
   params.set_max_time_in_seconds(static_cast<double>(time_limit_ms) / 1000.0);
   if (workers > 0) params.set_num_search_workers(workers);
-  // Перегруженная школа: максимум размещённых — тяжёлая оптимизация,
-  // ждём только ПЕРВОЕ найденное решение (дальше улучшит эвристика).
-  params.set_stop_after_first_solution(true);
+  // Максимум размещённых за лимит времени. stop_after_first_solution
+  // тут враг: первое решение оставляет часть уроков неразмещённой,
+  // и SolvePrecise откатывается на эвристику, не знающую про
+  // одновременность половинок делёного урока.
 
   CpModelProto model_proto = cp.Build();
   const CpSolverResponse response = SolveWithParameters(model_proto, params);

@@ -187,3 +187,4 @@ func ortoolsSolve(in SolveInput, parallelism int, timeout time.Duration) (Result
 	}
 	return Result{Entries: entries, Placed: placed, Total: n, Violations: 0}, true
 }
+

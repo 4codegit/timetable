@@ -15,7 +15,7 @@
         let activeSchoolID = 0;
         let newSchoolName = "Моя школа";
         let tab = "refs";
-        const APP_VERSION = "1.10.4";
+        const APP_VERSION = "1.10.5";
         let msg = "";
 
         let teachers = [], subjects = [], classes = [], rooms = [], lessons = [], constraints = [], schedule = [];
@@ -1096,6 +1096,7 @@
         }
 
         function className(list, id) { const x = list.find(c => c.id === id); return x ? x.name : "?"; }
+        function roomName(list, id) { const x = list.find(r => r.id === id); return x ? x.name : "?"; }
         function subjName(list, id) { const x = list.find(s => s.id === id); return x ? x.name : "?"; }
         function teachName(list, id) { const x = list.find(t => t.id === id); return x ? (x.short_name || x.name) : "?"; }
         function dayName(d) { return ["Пн","Вт","Ср","Чт","Пт","Сб","Вс"][d] || ("Д" + (d + 1)); }
