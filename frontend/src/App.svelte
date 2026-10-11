@@ -15,7 +15,7 @@
         let activeSchoolID = 0;
         let newSchoolName = "Моя школа";
         let tab = "refs";
-        const APP_VERSION = "1.10.6";
+        const APP_VERSION = "1.10.7";
         let msg = "";
 
         let teachers = [], subjects = [], classes = [], rooms = [], lessons = [], constraints = [], schedule = [];
@@ -221,14 +221,26 @@
                         schoolDaysMask = st.days_mask > 0
                                 ? st.days_mask
                                 : (1 << Math.min(days, 7)) - 1;
-                        if (Array.isArray(st.periods) && st.periods.length === slots) {
-                                bellPeriods = st.periods;
+                        // Звонки не сбрасываем в пустоту при несовпадении
+                        // длины: дополняем/обрезаем до текущего числа уроков.
+                        if (Array.isArray(st.periods)) {
+                                const cur = st.periods.slice();
+                                while (cur.length < slots) cur.push({ start: "", end: "" });
+                                bellPeriods = cur.slice(0, slots);
                         } else {
                                 bellPeriods = Array.from({ length: slots }, () => ({ start: "", end: "" }));
                         }
                 } catch (e) {
                         bellPeriods = Array.from({ length: slots }, () => ({ start: "", end: "" }));
                 }
+        }
+        // bellPeriods всегда имеет ровно slots записей: иначе bind:value
+        // в таблице звонков читал несуществующий элемент и «Сохранить»
+        // мог записать в базу пустые звонки.
+        $: if (bellPeriods.length !== slots) {
+                const cur = bellPeriods.slice();
+                while (cur.length < slots) cur.push({ start: "", end: "" });
+                bellPeriods = cur.slice(0, Math.max(0, slots));
         }
         async function saveSettings() {
                 const periods = [];
@@ -1531,7 +1543,7 @@
                                                                         <div class="mini" class:is-sub={isSubRow(row.id)}>
                                                                                 <button class="mini-title" on:click={() => focusRow(row.id)} title="Открыть этот класс отдельно">{row.label}{#if subParentName(row.id)}<span class="sub-badge">подгруппа {subParentName(row.id)}</span>{/if}</button>
                                                                                 <table>
-                                                                                        <thead><tr><th class="d"></th>{#each Array(slots) as _, si}<th>П{si + 1}</th>{/each}</tr></thead>
+                                                                                        <thead><tr><th class="d"></th>{#each Array(slots) as _, si}<th>{#if periodLabel(si)}{periodLabel(si)}{:else}П{si + 1}{/if}</th>{/each}</tr></thead>
                                                                                         <tbody>
                                                                                                 {#each row.cells as dayCells, di}
                                                                                                         <tr><td class="day">{dayName(activeDayIdx[di])}</td>{#each dayCells as cell, si}<td
