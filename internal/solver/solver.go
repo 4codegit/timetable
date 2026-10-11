@@ -256,6 +256,22 @@ func backtrackDl(in SolveInput, occ []Occurrence, hard HardSet, days, slots int,
 
 	teacherMaxCons, classMaxCons := map[int]int{}, map[int]int{}
 	teacherMaxDay, classMaxDay := map[int]int{}, map[int]int{}
+	// «Не более N уроков одного предмета подряд в день» (модель aSc):
+	// правило для предмета (entity: subject) или для всех предметов
+	// (entity: school). Проверяется по сквозной шкале семьи класса
+	// (родитель + подгруппы): половинки в одном слоте — один период.
+	type runRule struct{ subj, maxRun int }
+	var runRules []runRule
+	for _, c := range in.Constraints {
+		if !c.IsHard || c.Type != "max_consecutive_subject" || c.Weight < 1 {
+			continue
+		}
+		if c.EntityType == "subject" {
+			runRules = append(runRules, runRule{c.EntityID, c.Weight})
+		} else if c.EntityType == "school" {
+			runRules = append(runRules, runRule{0, c.Weight})
+		}
+	}
 	for _, c := range in.Constraints {
 		if !c.IsHard {
 			continue
@@ -359,6 +375,23 @@ func backtrackDl(in SolveInput, occ []Occurrence, hard HardSet, days, slots int,
 			}
 			if cMaxCons > 0 && runIfPlacedInt(classBusy[cID], cc.day, cc.slot) > cMaxCons {
 				continue
+			}
+			if len(runRules) > 0 {
+				fam := bodies[cID]
+				if p := subParentOfClass(in.Classes, cID); p != 0 {
+					fam = bodies[p]
+				}
+				maxRun := 0
+				for _, rr := range runRules {
+					if rr.subj == 0 || rr.subj == o.Lesson.SubjectID {
+						if maxRun == 0 || rr.maxRun < maxRun {
+							maxRun = rr.maxRun
+						}
+					}
+				}
+				if maxRun > 0 && familyRunIfPlaced(classBusy, fam, cc.day, cc.slot, o.Lesson.SubjectID, slots) > maxRun {
+					continue
+				}
 			}
 			teacherBusy[tID][cc.day][cc.slot] = true
 			for _, cid := range cs.mark {
@@ -714,6 +747,31 @@ func buildClassSets(classes map[int]domain.SchoolClass) map[int]classSets {
 		res[id] = cs
 	}
 	return res
+}
+
+// familyRunIfPlaced: длина серии одинаковых предметов в сквозной шкале
+// семьи класса (родитель + подгруппы) на день d, если поставить subj
+// в слот s. Занятость семьи в слоте — первый ненулевой предмет среди
+// членов семьи; половинки в одном слоте считаются одним периодом.
+func familyRunIfPlaced(classBusy map[int][][]int, family []int, d, s, subj, slots int) int {
+	day := make([]int, slots)
+	for t := 0; t < slots; t++ {
+		for _, cid := range family {
+			if v := classBusy[cid][d][t]; v != 0 {
+				day[t] = v
+				break
+			}
+		}
+	}
+	day[s] = subj
+	run := 1
+	for t := s - 1; t >= 0 && day[t] == subj; t-- {
+		run++
+	}
+	for t := s + 1; t < slots && day[t] == subj; t++ {
+		run++
+	}
+	return run
 }
 
 // classFree: слот свободен для урока с предметом subj. Занятость

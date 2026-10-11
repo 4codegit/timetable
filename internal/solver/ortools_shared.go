@@ -40,6 +40,8 @@ func constraintTypeCode(t string) int {
 		return 9
 	case "simultaneous_groups":
 		return 10
+	case "max_consecutive_subject":
+		return 11
 	}
 	return -1
 }
@@ -138,6 +140,8 @@ func entityTypeCode(t string) int {
 		return 2
 	case "school":
 		return 3
+	case "subject":
+		return 4
 	}
 	return -1
 }

@@ -244,6 +244,28 @@ extern "C" ScheduleResult* ortools_solve(
           }
         break;
       }
+      case 11: {  // max_consecutive_subject: не более N уроков ОДНОГО
+                  // предмета подряд в день у класса (entity: subject или
+                  // school = все предметы). value = макс. подряд.
+        if (c.value >= 1) {
+          // Группы вхождений по (класс, предмет) в области действия.
+          std::map<long long, std::vector<int>> groups;
+          for (int o = 0; o < O; ++o) {
+            if (c.entity_type == 4 && occ[o].subject != c.entity_id) continue;
+            long long key = (long long)occ[o].cls * 100000 + occ[o].subject;
+            groups[key].push_back(o);
+          }
+          for (const auto& kv : groups) {
+            for (int d = 0; d < D; ++d) {
+              for (int a = 0; a + c.value < S; ++a) {
+                std::vector<BoolVar> w = windowVars(kv.second, d, a, a + c.value);
+                cp.AddLinearConstraint(LinearExpr::Sum(w), Domain(0, c.value));
+              }
+            }
+          }
+        }
+        break;
+      }
       case 4: {  // lunch_break (require a free slot in [start,end])
         const std::vector<int>* set = occSetOf(c.entity_type, c.entity_id);
         if (!set) break;

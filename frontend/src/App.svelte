@@ -15,7 +15,7 @@
         let activeSchoolID = 0;
         let newSchoolName = "Моя школа";
         let tab = "refs";
-        const APP_VERSION = "1.10.5";
+        const APP_VERSION = "1.10.6";
         let msg = "";
 
         let teachers = [], subjects = [], classes = [], rooms = [], lessons = [], constraints = [], schedule = [];
@@ -82,6 +82,22 @@
         }
         function toggleConDay(d, on) {
                 con.days = on ? [...con.days, d].sort((a, b) => a - b) : con.days.filter((x) => x !== d);
+        }
+        // Правило «один предмет — не более N подряд» (max_consecutive_subject).
+        let ruleSubject = 0, ruleMax = 2;
+        async function addRunRule() {
+                const n = Math.max(1, Math.min(8, ruleMax || 0));
+                if (!n) { flash("Укажите число подряд (например 2)"); return; }
+                await CreateConstraint({
+                        school_id: activeSchoolID,
+                        type: "max_consecutive_subject",
+                        entity_type: ruleSubject ? "subject" : "school",
+                        entity_id: ruleSubject || 0,
+                        weight: n,
+                        is_hard: true,
+                });
+                await reloadRefs();
+                flash("Правило добавлено: " + (ruleSubject ? subjName(subjects, ruleSubject) : "все предметы") + " — не более " + n + " подряд");
         }
 
         let days = 6, slots = 8;
@@ -216,11 +232,25 @@
         }
         async function saveSettings() {
                 const periods = [];
-                for (let i = 0; i < slots; i++) periods.push(bellPeriods[i] || { start: "", end: "" });
+                for (let i = 0; i < slots; i++) periods.push({ start: normalizeTime(bellPeriods[i]?.start || ""), end: normalizeTime(bellPeriods[i]?.end || "") });
                 const st = { days, slots, days_mask: schoolDaysMask, periods };
                 await UpdateSchoolSettings(activeSchoolID, JSON.stringify(st));
                 bellPeriods = periods;
                 flash("Настройки сохранены");
+        }
+        // Время звонков — всегда 24-часовое ЧЧ:ММ. Терпит ввод «830»,
+        // «8:30», «8.30», «08:30»; пустое остаётся пустым.
+        function normalizeTime(v) {
+                let s = String(v || "").trim().replace(/[.,; ]+/g, ":");
+                if (!s) return "";
+                const digits = s.replace(/\D/g, "");
+                if (!s.includes(":") && (digits.length === 3 || digits.length === 4)) {
+                        s = digits.slice(0, digits.length - 2) + ":" + digits.slice(-2);
+                }
+                const m = s.match(/^(\d{1,2}):(\d{1,2})$/);
+                if (!m) return "";
+                const h = Math.min(23, +m[1]), mm = Math.min(59, +m[2]);
+                return String(h).padStart(2, "0") + ":" + String(mm).padStart(2, "0");
         }
         // Переключение учебного дня (чекбокс в «Ограничениях»): последний
         // включённый день снять нельзя — расписание без дней не строится.
@@ -231,7 +261,7 @@
                 schoolDaysMask = next;
                 if (activeSchoolID) {
                         const periods = [];
-                        for (let i = 0; i < slots; i++) periods.push(bellPeriods[i] || { start: "", end: "" });
+                        for (let i = 0; i < slots; i++) periods.push({ start: normalizeTime(bellPeriods[i]?.start || ""), end: normalizeTime(bellPeriods[i]?.end || "") });
                         UpdateSchoolSettings(activeSchoolID, JSON.stringify({ days, slots, days_mask: schoolDaysMask, periods })).catch(() => {});
                 }
         }
@@ -1113,6 +1143,7 @@
                 class_unavailable:      { day: true,  slots: true,  value: false, valueLabel: "" },
                 room_unavailable:       { day: true,  slots: true,  value: false, valueLabel: "" },
                 max_consecutive:        { day: false, slots: false, value: true,  valueLabel: "Макс. подряд" },
+                max_consecutive_subject:{ day: false, slots: false, value: true,  valueLabel: "не более подряд" },
                 lunch_break:            { day: false, slots: true,  value: false, valueLabel: "" },
                 max_lessons_per_day:    { day: false, slots: false, value: true,  valueLabel: "Макс. в день" },
                 min_lessons_per_day:    { day: false, slots: false, value: true,  valueLabel: "Мин. в день" },
@@ -1124,6 +1155,7 @@
                 class_unavailable:      "Класс недоступен",
                 room_unavailable:       "Кабинет недоступен",
                 max_consecutive:        "Макс. подряд уроков",
+                max_consecutive_subject:"Один предмет — не более N подряд",
                 lunch_break:            "Обеденный перерыв",
                 max_lessons_per_day:    "Макс. уроков в день",
                 min_lessons_per_day:    "Мин. уроков в день",
@@ -1134,6 +1166,7 @@
         function constraintFields(t) { return CONSTRAINT_FIELDS[t] || { day: false, slots: false, value: false, valueLabel: "" }; }
         function constraintEntityLabel(c) {
                 if (c.entity_type === "school") return "вся школа";
+                if (c.entity_type === "subject") return subjName(subjects, c.entity_id);
                 const list = c.entity_type === "teacher" ? teachers : c.entity_type === "class" ? classes : rooms;
                 const item = list.find(x => x.id === c.entity_id);
                 return item ? item.name : "#" + c.entity_id;
@@ -1398,6 +1431,17 @@
                                                         </li>
                                                 {/each}
                                         </ul>
+
+                                        <div class="rule-form">
+                                                <span class="field-label">Правило:</span>
+                                                <select bind:value={ruleSubject}>
+                                                        <option value={0}>Все предметы</option>
+                                                        {#each subjects as s}<option value={s.id}>{s.name}</option>{/each}
+                                                </select>
+                                                <label class="rule-max">не более <input type="number" min="1" max="8" bind:value={ruleMax} /> подряд в день</label>
+                                                <button class="primary sm" on:click={addRunRule}>+ Правило</button>
+                                        </div>
+                                        <p class="hint">Как в aSc Timetables: ученики не получают один и тот же предмет N уроков подряд (например, информатика 1-й, 2-й и 3-й уроки одной строкой). Половинки делёного урока в одном слоте считаются одним периодом.</p>
                                 </section>
                         {:else if tab === "settings"}
                                 <section class="card">
@@ -1418,8 +1462,8 @@
                                                         {#each Array(slots) as _, si}
                                                                 <tr>
                                                                         <td>П{si + 1}</td>
-                                                                        <td><input type="time" bind:value={bellPeriods[si].start} /></td>
-                                                                        <td><input type="time" bind:value={bellPeriods[si].end} /></td>
+                                                                        <td><input class="bell-time" type="text" inputmode="numeric" placeholder="08:00" bind:value={bellPeriods[si].start} on:change={() => { bellPeriods[si].start = normalizeTime(bellPeriods[si].start); }} title="24-часовой формат ЧЧ:ММ" /></td>
+                                                                        <td><input class="bell-time" type="text" inputmode="numeric" placeholder="08:45" bind:value={bellPeriods[si].end} on:change={() => { bellPeriods[si].end = normalizeTime(bellPeriods[si].end); }} title="24-часовой формат ЧЧ:ММ" /></td>
                                                                 </tr>
                                                         {/each}
                                                 </tbody>
@@ -1725,6 +1769,11 @@
         .pager { display: inline-flex; align-items: center; gap: 6px; }
         .status { background: #ecfdf5; border: 1px solid #a7f3d0; color: #065f46; padding: 8px 12px; border-radius: 10px; font-size: 13px; }
         .hint { color: #64748b; font-size: 12px; margin: 6px 0 14px; }
+        .rule-form { display: flex; align-items: center; gap: 8px; margin-top: 14px; padding-top: 12px; border-top: 1px solid #e2e8f0; flex-wrap: wrap; }
+        .rule-form select { min-width: 160px; }
+        .rule-max { font-size: 13px; color: #334155; display: inline-flex; align-items: center; gap: 6px; }
+        .rule-max input { width: 64px; }
+        .bell-time { width: 84px; font-variant-numeric: tabular-nums; }
         .empty { color: #94a3b8; padding: 24px; text-align: center; background: #f8fafc; border-radius: 10px; }
         .grid-scroll { overflow-x: auto; }
 
