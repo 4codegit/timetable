@@ -2,6 +2,7 @@ package solver
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -205,3 +206,75 @@ func TestSubgroupsParallel(t *testing.T) {
 }
 
 func intPtr(v int) *int { return &v }
+
+// synthSchool строит синтетическую школу (только в памяти, без БД):
+// nClasses классов, 8 предметов, ~nClasses учителей, 12 кабинетов.
+// У каждого класса 7 предметов по 3-5 часов — ~30 часов в неделю.
+func synthSchool(nClasses int) SolveInput {
+	teachers := map[int]domain.Teacher{}
+	for i := 1; i <= nClasses; i++ {
+		teachers[i] = domain.Teacher{ID: i, Name: fmt.Sprintf("Учитель %d", i), MaxHoursPerWeek: 34}
+	}
+	subjects := map[int]domain.Subject{}
+	subjNames := []string{"Математика", "Физика", "Химия", "Литература", "История", "Английский", "Информатика", "Физкультура"}
+	for i, n := range subjNames {
+		subjects[i+1] = domain.Subject{ID: i + 1, Name: n}
+	}
+	classes := map[int]domain.SchoolClass{}
+	for i := 1; i <= nClasses; i++ {
+		classes[i] = domain.SchoolClass{ID: i, Name: fmt.Sprintf("%dА", i)}
+	}
+	rooms := []domain.Room{}
+	for i := 1; i <= nClasses*4/5; i++ {
+		rooms = append(rooms, domain.Room{ID: i, Name: fmt.Sprintf("%d", 100+i)})
+	}
+	lessons := make([]domain.Lesson, 0, nClasses*7)
+	id := 1
+	for c := 1; c <= nClasses; c++ {
+		for s := 1; s <= 7; s++ {
+			h := 3 + (s+c)%3 // 3..5 часов
+			lessons = append(lessons, domain.Lesson{
+				ID: id, ClassID: c, SubjectID: s, TeacherID: c, HoursPerWeek: h,
+			})
+			id++
+		}
+	}
+	return SolveInput{
+		SchoolID: 1, Lessons: lessons, Teachers: teachers, Classes: classes,
+		Rooms: rooms, Subjects: subjects,
+		Config: domain.SchedulingConfig{DaysPerWeek: 6, SlotsPerDay: 7},
+	}
+}
+
+// TestSolveLargeSchool — крупная школа должна размещаться полностью за
+// разумное время; это и регрессия на полноту, и ориентир для оптимизаций
+// перебора (горячий цикл которого переписан на предвычисленные кандидаты).
+func TestSolveLargeSchool(t *testing.T) {
+	if testing.Short() {
+		t.Skip("long-running test")
+	}
+	in := synthSchool(20)
+	res := Solve(context.Background(), in, 4, 10*time.Second)
+	if res.Total == 0 {
+		t.Fatal("no occurrences built")
+	}
+	if res.Placed != res.Total {
+		t.Fatalf("large school not fully placed: %d/%d", res.Placed, res.Total)
+	}
+}
+
+func BenchmarkSolve20Classes(b *testing.B) {
+	in := synthSchool(20)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		Solve(context.Background(), in, 4, 5*time.Second)
+	}
+}
+
+func BenchmarkSolve10Classes(b *testing.B) {
+	in := synthSchool(10)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		Solve(context.Background(), in, 4, 2*time.Second)
+	}
+}

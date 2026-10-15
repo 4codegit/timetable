@@ -18,7 +18,7 @@ func main() {
 	}
 
 	subjects := []string{"Алгебра", "Физика", "Химия", "Литература", "История", "Английский язык", "Физкультура", "Информатика"}
-	palette := []string{"#dbeafe", "#dcfce7", "#fef9c3", "#fae8ff", "#ffedd5", "#cffafe", "#fecaca", "#e0e7ff"}
+	palette := []string{"#3b82f6", "#10b981", "#f59e0b", "#8b5cf6", "#ec4899", "#06b6d4", "#6366f1", "#14b8a6"}
 	classes := []string{"7А", "8А", "8Б", "9А", "9Б", "10А", "10Б", "11А", "11Б"}
 	teachers := []string{"Иванова И.И.", "Петров П.П.", "Сидорова А.А.", "Кузнецов К.К.", "Смирнов С.С.", "Орлова О.О."}
 	rooms := []string{"101", "102", "103", "201", "202", "203", "Спортзал", "ИТ-лаборатория"}
@@ -26,9 +26,10 @@ func main() {
 		{Start: "08:00", End: "08:45"}, {Start: "08:55", End: "09:40"},
 		{Start: "09:50", End: "10:35"}, {Start: "10:55", End: "11:40"},
 		{Start: "11:50", End: "12:35"}, {Start: "12:45", End: "13:30"},
-		{Start: "13:40", End: "14:25"}, {Start: "14:35", End: "15:20"},
+		{Start: "13:40", End: "14:25"},
 	}
 
+	// В ячейке может лежать второй урок — параллельная подгруппа класса.
 	cellAt := func(mode string) func(rowID, day, slot int) (pdf.Cell, bool) {
 		return func(rowID, day, slot int) (pdf.Cell, bool) {
 			if (day+slot+rowID*2)%5 == 4 {
@@ -48,14 +49,10 @@ func main() {
 				SubjectID: ((day*3 + slot + rowID) % len(subjects)) + 1,
 				TeacherID: teacher,
 				RoomID:    room,
+				ClassID:   (rowID % len(classes)) + 1,
 				Conflict:  (rowID == 6 && day == 0 && slot == 2) || (rowID == 8 && day == 3 && slot == 4),
 			}, true
 		}
-	}
-
-	legend := make([]pdf.LegendItem, 0, len(subjects))
-	for i, s := range subjects {
-		legend = append(legend, pdf.LegendItem{SubjectID: i + 1, Name: s})
 	}
 
 	base := func(mode string, labels []string, ids []int) pdf.Options {
@@ -69,26 +66,23 @@ func main() {
 				"school": "вся школа", "class": "по классам",
 				"teacher": "по учителям", "room": "по кабинетам",
 			}[mode],
-			Days:           6,
-			Slots:          7,
-			Periods:        periods[:7],
-			Mode:           mode,
-			Rows:           rows,
-			CellAt:         cellAt(mode),
-			ShowTeacher:    true,
-			ShowRoom:       true,
-			PageSize:       "A4",
-			Orientation:    "portrait",
-			SubjectName:    func(id int) string { return subjects[(id-1)%len(subjects)] },
-			TeacherName:    func(id int) string { return teachers[(id-1)%len(teachers)] },
-			RoomName:       func(id int) string { return rooms[(id-1)%len(rooms)] },
-			SubjectColor:   func(id int) string { return palette[(id-1)%len(palette)] },
-			LegendSubjects: legend,
-			Conflicts: []pdf.ConflictLine{
-				{Text: "Алгебра (Ив) — Пн П3"},
-				{Text: "Физика (Куз) — Чт П5"},
-			},
-			GeneratedOn: "05.09.2026",
+			Days:    6,
+			Slots:   7,
+			Periods: periods[:7],
+			Mode:    mode,
+			Rows:    rows,
+			CellAt:  cellAt(mode),
+			// У класса кабинет в подписи строки, у учителя — класс в ячейке:
+			// как в реальном экспорте из app.go.
+			ShowTeacher:  true,
+			ShowRoom:     false,
+			PageSize:     "A4",
+			Orientation:  "portrait",
+			SubjectName:  func(id int) string { return subjects[(id-1)%len(subjects)] },
+			TeacherName:  func(id int) string { return teachers[(id-1)%len(teachers)] },
+			RoomName:     func(id int) string { return rooms[(id-1)%len(rooms)] },
+			ClassName:    func(id int) string { return classes[(id-1)%len(classes)] },
+			SubjectColor: func(id int) string { return palette[(id-1)%len(palette)] },
 		}
 	}
 

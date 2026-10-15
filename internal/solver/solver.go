@@ -97,11 +97,14 @@ func Solve(ctx context.Context, in SolveInput, parallelism int, timeout time.Dur
 		slots = 8
 	}
 
-	occ := buildOccurrences(in, days, slots)
-	hard := buildHard(in, days, slots)
+	// Всё, что не зависит от состояния поиска (кандидаты по HardSet,
+	// порядок обхода, правила), считаем ОДИН раз на вызов Solve —
+	// раньше это пересчитывалось в каждом узле перебора и в каждой
+	// попытке рестарта.
+	env := buildSearchEnv(in, days, slots)
 
 	var best Result
-	best.Total = len(occ)
+	best.Total = len(env.occ)
 	var mu sync.Mutex
 	update := func(r Result) {
 		mu.Lock()
@@ -120,9 +123,12 @@ func Solve(ctx context.Context, in SolveInput, parallelism int, timeout time.Dur
 		go func(seed int64) {
 			defer wg.Done()
 			rng := rand.New(rand.NewSource(seed))
-			local := runRestarts(workerCtx, in, occ, hard, days, slots, rng)
-			if local.Placed > 0 {
-				update(local)
+			// Статика env общая (read-only), scratch-буферы — свои
+			// на воркера: они мутируются в глубине перебора.
+			local := env.forWorker()
+			r := runRestarts(workerCtx, local, rng)
+			if r.Placed > 0 {
+				update(r)
 			}
 		}(time.Now().UnixNano() + int64(w*7919))
 	}
@@ -131,8 +137,8 @@ func Solve(ctx context.Context, in SolveInput, parallelism int, timeout time.Dur
 }
 
 // runRestarts performs multiple randomised backtracking attempts and keeps the best.
-func runRestarts(ctx context.Context, in SolveInput, occ []Occurrence, hard HardSet, days, slots int, rng *rand.Rand) Result {
-	best := Result{Total: len(occ)}
+func runRestarts(ctx context.Context, env searchEnv, rng *rand.Rand) Result {
+	best := Result{Total: len(env.occ)}
 	deadline, _ := ctx.Deadline()
 	for {
 		if time.Now().After(deadline) {
@@ -145,14 +151,14 @@ func runRestarts(ctx context.Context, in SolveInput, occ []Occurrence, hard Hard
 		if attemptDl.After(deadline) {
 			attemptDl = deadline
 		}
-		r := backtrackDl(in, occ, hard, days, slots, rng, attemptDl)
+		r := backtrackDl(env, rng, attemptDl)
 		if r.Placed > best.Placed || (r.Placed == best.Placed && r.Violations < best.Violations) {
 			best = r
 		}
-		if r.Placed == len(occ) && r.Violations == 0 {
+		if r.Placed == len(env.occ) && r.Violations == 0 {
 			break // perfect
 		}
-		if r.Placed == len(occ) {
+		if r.Placed == len(env.occ) {
 			// good enough, keep searching a bit for fewer violations
 			if time.Now().After(deadline.Add(-200 * time.Millisecond)) {
 				break
@@ -162,20 +168,144 @@ func runRestarts(ctx context.Context, in SolveInput, occ []Occurrence, hard Hard
 	return best
 }
 
-func backtrack(in SolveInput, occ []Occurrence, hard HardSet, days, slots int, rng *rand.Rand) Result {
-	return backtrackDl(in, occ, hard, days, slots, rng, time.Time{})
+// searchEnv — предвычисленная, неизменяемая между попытками поиска часть
+// модели: occurrences, жёсткие запреты, статические слоты по HardSet,
+// порядок обхода, правила и ПЛОТНЫЕ индексы сущностей (учителя/классы/
+// кабинеты → 0..n-1), благодаря которым горячий цикл перебора работает
+// с плоскими массивами без единого map-lookup-а.
+// Мутируемые scratch-буферы (candBuf, famScale) выделяются на воркера
+// через forWorker: сама переборная рекурсия однопоточна внутри воркера.
+type searchEnv struct {
+	in     SolveInput
+	occ    []Occurrence
+	hard   HardSet
+	days   int
+	slots  int
+	stride int // days*slots — размер «сетки» одной сущности
+
+	nT, nC, nR int // плотные количества учителей/классов/кабинетов
+
+	order     []int       // порядок обхода: базы, за каждой — её половинки
+	baseOfOcc map[int]int // occ idx → occ idx базового урока (только половинки)
+	staticDS  [][]cell    // occurrence → (d,s)-слоты, разрешённые HardSet (room=0)
+	candBuf   [][]cell    // occurrence → scratch для динамической фильтрации
+	famScale  []int       // scratch для familyRunFlat
+
+	// Плотные предвычисления на occurrence: индексы и правила, которые
+	// раньше вычислялись map-lookup-ами в каждом узле перебора.
+	occTIdx     []int          // → плотный индекс учителя
+	occCIdx     []int          // → плотный индекс класса
+	occCS       []classSetsIdx // → check/mark наборы (базы уже умножены на stride)
+	occRoomIdx  [][]int        // → плотные индексы кабинетов (параллельно RoomChoices)
+	occTMaxDay  []int          // макс. уроков в день учителя (0 = нет правила)
+	occCMaxDay  []int
+	occTMaxCons []int // макс. подряд уроков учителя (0 = нет правила)
+	occCMaxCons []int
+	occFamRule  []int   // макс. подряд одного предмета в семье класса (0 = нет)
+	occFamIdx   [][]int // семейная шкала (плотные базы) для occFamRule
+
+	bodies    map[int][]int     // classID → тела учеников (валидация обеда)
+	classSets map[int]classSets // classID → check/mark наборы (DB id)
+	family    map[int][]int     // classID → семейная шкала (DB id)
+	runRules  []runRule         // «не более N одного предмета подряд»
+	rulesOn   bool
+
+	teacherMaxCons map[int]int
+	classMaxCons   map[int]int
+	teacherMaxDay  map[int]int
+	classMaxDay    map[int]int
 }
 
-// backtrackDl — то же самое, но с жёстким дедлайном ВНУТРИ перебора:
-// на больших школах (сотни уроков) один вызов перебора без проверки
-// времени уходил в экспоненциальный откат на часы, игнорируя дедлайн
-// рестартов. Проверка каждые 4096 узлов прерывает поиск — наверх идёт
-// лучшее найденное к этому моменту.
-func backtrackDl(in SolveInput, occ []Occurrence, hard HardSet, days, slots int, rng *rand.Rand, deadline time.Time) Result {
-	// Order occurrences: most constrained first (fewest room choices).
-	// Делёные пары: половинка ставится СРАЗУ после своей базы —
-	// параллельно с ней (в один слот).
-	order := make([]int, 0, len(occ))
+// runRule — «не более N уроков одного предмета подряд в день» (модель aSc):
+// правило для предмета (subj > 0) или для всех предметов (subj == 0).
+type runRule struct{ subj, maxRun int }
+
+// classSetsIdx — плотная версия classSets: check/mark хранят базы
+// ячеек классов (плотный индекс × stride), к которым в узле прибавляется
+// смещение (day*slots + slot).
+type classSetsIdx struct {
+	check []int
+	mark  []int
+}
+
+// forWorker копирует окружение с собственными scratch-буферами: статика
+// (occ, staticDS, order, правила, плотные индексы) общая и в поиске
+// только читается.
+func (e searchEnv) forWorker() searchEnv {
+	out := e
+	out.candBuf = make([][]cell, len(e.occ))
+	for i := range e.occ {
+		// худший размер после динамической фильтрации: слоты × комнаты
+		out.candBuf[i] = make([]cell, 0, len(e.staticDS[i])*len(e.occ[i].RoomChoices))
+	}
+	out.famScale = make([]int, e.slots)
+	return out
+}
+
+// buildSearchEnv предвычисляет всё статическое: слоты по HardSet,
+// пары делёных уроков за O(n) вместо O(n²), семейные шкалы, карты правил
+// и плотные индексы всех сущностей.
+func buildSearchEnv(in SolveInput, days, slots int) searchEnv {
+	occ := buildOccurrences(in, days, slots)
+	hard := buildHard(in, days, slots)
+	stride := days * slots
+	env := searchEnv{
+		in: in, occ: occ, hard: hard, days: days, slots: slots, stride: stride,
+		baseOfOcc:      map[int]int{},
+		bodies:         buildStudentBodies(in.Classes),
+		classSets:      buildClassSets(in.Classes),
+		family:         map[int][]int{},
+		teacherMaxCons: map[int]int{},
+		classMaxCons:   map[int]int{},
+		teacherMaxDay:  map[int]int{},
+		classMaxDay:    map[int]int{},
+	}
+
+	// Плотные индексы: все сущности из справочников плюс сущности,
+	// на которые ссылаются уроки (защита от битых ссылок: старый код
+	// в этом месте падал бы на nil-карте занятости).
+	tPos := map[int]int{}
+	for t := range in.Teachers {
+		tPos[t] = len(tPos)
+	}
+	cPos := map[int]int{}
+	for c := range in.Classes {
+		cPos[c] = len(cPos)
+	}
+	rPos := map[int]int{}
+	for _, r := range in.Rooms {
+		rPos[r.ID] = len(rPos)
+	}
+	for _, l := range in.Lessons {
+		if _, ok := tPos[l.TeacherID]; !ok {
+			tPos[l.TeacherID] = len(tPos)
+		}
+		if _, ok := cPos[l.ClassID]; !ok {
+			cPos[l.ClassID] = len(cPos)
+		}
+	}
+	env.nT, env.nC, env.nR = len(tPos), len(cPos), len(rPos)
+
+	// Статические (d,s)-слоты: только HardSet-фильтр, без занятости.
+	// Комнаты не в статике — HardSet.Forbidden не знает комнат (roomID=0),
+	// и перечисляются они в узле, где видна занятость. Слот занят —
+	// все его комнаты отбрасываются одной проверкой (а не 16×).
+	env.staticDS = make([][]cell, len(occ))
+	for i, o := range occ {
+		list := make([]cell, 0, days*slots)
+		for d := 0; d < days; d++ {
+			for s := 0; s < slots; s++ {
+				if hard.Forbidden(o.Lesson.TeacherID, o.Lesson.ClassID, 0, d, s) {
+					continue
+				}
+				list = append(list, cell{day: d, slot: s})
+			}
+		}
+		env.staticDS[i] = list
+	}
+
+	// Делёные пары (модель aSc): урок подгруппы с тем же предметом, что и
+	// урок родительского класса. Половинки ставятся СРАЗУ после базы.
 	halfOfLesson := map[int]int{} // id урока-половинки → id базового урока
 	byKey := map[string]int{}
 	for _, l := range in.Lessons {
@@ -188,22 +318,21 @@ func backtrackDl(in SolveInput, occ []Occurrence, hard HardSet, days, slots int,
 			}
 		}
 	}
-	placed := make([]bool, len(occ))
-	// индекс occurrence → id урока
-	occLesson := make([]int, len(occ))
-	for i, o := range occ {
-		occLesson[i] = o.Lesson.ID
-	}
-	baseOfOcc := map[int]int{} // occ index → occ index базы
+	// occ idx последнего вхождения каждого урока (база часов > 1).
+	occIdxByLesson := map[int]int{}
 	for i := range occ {
-		if base, ok := halfOfLesson[occLesson[i]]; ok {
-			for j := range occ {
-				if j != i && occLesson[j] == base {
-					baseOfOcc[i] = j
-				}
+		occIdxByLesson[occ[i].Lesson.ID] = i
+	}
+	for i := range occ {
+		if base, ok := halfOfLesson[occ[i].Lesson.ID]; ok {
+			if bj, ok2 := occIdxByLesson[base]; ok2 {
+				env.baseOfOcc[i] = bj
 			}
 		}
 	}
+
+	// Порядок обхода: наиболее ограниченные вперёд, половинки — сразу
+	// за своей базой (параллельно с ней, в один слот).
 	all := make([]int, len(occ))
 	for i := range all {
 		all[i] = i
@@ -211,18 +340,20 @@ func backtrackDl(in SolveInput, occ []Occurrence, hard HardSet, days, slots int,
 	sort.SliceStable(all, func(a, b int) bool {
 		return len(occ[all[a]].RoomChoices) < len(occ[all[b]].RoomChoices)
 	})
+	placed := make([]bool, len(occ))
+	order := make([]int, 0, len(occ))
 	for _, i := range all {
 		if placed[i] {
 			continue
 		}
-		if _, isHalf := baseOfOcc[i]; isHalf {
+		if _, isHalf := env.baseOfOcc[i]; isHalf {
 			continue // половинки — во втором проходе, после баз
 		}
 		order = append(order, i)
 		placed[i] = true
 		// сразу за базой — её половинки
 		for _, j := range all {
-			if !placed[j] && baseOfOcc[j] == i {
+			if !placed[j] && env.baseOfOcc[j] == i {
 				order = append(order, j)
 				placed[j] = true
 			}
@@ -234,44 +365,20 @@ func backtrackDl(in SolveInput, occ []Occurrence, hard HardSet, days, slots int,
 			placed[i] = true
 		}
 	}
+	env.order = order
 
-	teacherBusy := map[int][][]bool{}
-	classBusy := map[int][][]int{}
-	roomBusy := map[int][][]bool{}
-	_ = classBusy
-	for t := range in.Teachers {
-		teacherBusy[t] = newGrid(days, slots)
-	}
-	for c := range in.Classes {
-		classBusy[c] = newGridInt(days, slots)
-	}
-	for _, r := range in.Rooms {
-		roomBusy[r.ID] = newGrid(days, slots)
-	}
-
-	// Делёные уроки: урок подгруппы с тем же предметом, что и урок
-	// родительского класса — пара половинок (ставятся параллельно).
-	bodies := buildStudentBodies(in.Classes)
-	classSetsMap := buildClassSets(in.Classes)
-
-	teacherMaxCons, classMaxCons := map[int]int{}, map[int]int{}
-	teacherMaxDay, classMaxDay := map[int]int{}, map[int]int{}
-	// «Не более N уроков одного предмета подряд в день» (модель aSc):
-	// правило для предмета (entity: subject) или для всех предметов
-	// (entity: school). Проверяется по сквозной шкале семьи класса
-	// (родитель + подгруппы): половинки в одном слоте — один период.
-	type runRule struct{ subj, maxRun int }
-	var runRules []runRule
+	// Правила из ограничений: подряд/в день — карты по сущности.
 	for _, c := range in.Constraints {
 		if !c.IsHard || c.Type != "max_consecutive_subject" || c.Weight < 1 {
 			continue
 		}
 		if c.EntityType == "subject" {
-			runRules = append(runRules, runRule{c.EntityID, c.Weight})
+			env.runRules = append(env.runRules, runRule{c.EntityID, c.Weight})
 		} else if c.EntityType == "school" {
-			runRules = append(runRules, runRule{0, c.Weight})
+			env.runRules = append(env.runRules, runRule{0, c.Weight})
 		}
 	}
+	env.rulesOn = len(env.runRules) > 0
 	for _, c := range in.Constraints {
 		if !c.IsHard {
 			continue
@@ -279,29 +386,132 @@ func backtrackDl(in SolveInput, occ []Occurrence, hard HardSet, days, slots int,
 		switch c.Type {
 		case "max_consecutive":
 			if c.EntityType == "teacher" {
-				teacherMaxCons[c.EntityID] = c.Weight
+				env.teacherMaxCons[c.EntityID] = c.Weight
 			}
 			if c.EntityType == "class" {
-				classMaxCons[c.EntityID] = c.Weight
+				env.classMaxCons[c.EntityID] = c.Weight
 			}
 		case "max_lessons_per_day":
 			if c.EntityType == "teacher" {
-				teacherMaxDay[c.EntityID] = c.Weight
+				env.teacherMaxDay[c.EntityID] = c.Weight
 			}
 			if c.EntityType == "class" {
-				classMaxDay[c.EntityID] = c.Weight
+				env.classMaxDay[c.EntityID] = c.Weight
+			}
+		}
+	}
+	// Семейная шкала для runRules: у подгруппы — тело родителя,
+	// иначе своё. Проверка идёт по сквозной шкале семьи класса
+	// (родитель + подгруппы): половинки в одном слоте — один период.
+	if env.rulesOn {
+		for i := range occ {
+			cid := occ[i].Lesson.ClassID
+			fam := cid
+			if p := subParentOfClass(in.Classes, cid); p != 0 {
+				fam = p
+			}
+			if _, ok := env.family[cid]; !ok {
+				env.family[cid] = env.bodies[fam]
 			}
 		}
 	}
 
-	teacherDay := map[int][]int{}
-	classDay := map[int][]int{}
-	for t := range in.Teachers {
-		teacherDay[t] = make([]int, days)
+	// Плотные предвычисления на occurrence.
+	n := len(occ)
+	env.occTIdx = make([]int, n)
+	env.occCIdx = make([]int, n)
+	env.occCS = make([]classSetsIdx, n)
+	env.occRoomIdx = make([][]int, n)
+	env.occTMaxDay = make([]int, n)
+	env.occCMaxDay = make([]int, n)
+	env.occTMaxCons = make([]int, n)
+	env.occCMaxCons = make([]int, n)
+	env.occFamRule = make([]int, n)
+	env.occFamIdx = make([][]int, n)
+	for i, o := range occ {
+		tID, cID := o.Lesson.TeacherID, o.Lesson.ClassID
+		tIdx, cIdx := tPos[tID], cPos[cID]
+		env.occTIdx[i] = tIdx
+		env.occCIdx[i] = cIdx
+		ri := make([]int, len(o.RoomChoices))
+		for k, r := range o.RoomChoices {
+			ri[k] = rPos[r]
+		}
+		env.occRoomIdx[i] = ri
+		if cs, ok := denseClassSets(env.classSets[cID], cPos, stride); ok {
+			env.occCS[i] = cs
+		}
+		// класс вне справочника (битая ссылка) — без проверок и меток,
+		// как в исходном переборе (нулевой classSets)
+		env.occTMaxDay[i] = env.teacherMaxDay[tID]
+		env.occCMaxDay[i] = env.classMaxDay[cID]
+		env.occTMaxCons[i] = env.teacherMaxCons[tID]
+		env.occCMaxCons[i] = env.classMaxCons[cID]
+		if env.rulesOn {
+			maxRun := 0
+			for _, rr := range env.runRules {
+				if rr.subj == 0 || rr.subj == o.Lesson.SubjectID {
+					if maxRun == 0 || rr.maxRun < maxRun {
+						maxRun = rr.maxRun
+					}
+				}
+			}
+			env.occFamRule[i] = maxRun
+			if maxRun > 0 {
+				famDB := env.family[cID]
+				fam := make([]int, len(famDB))
+				for k, cid := range famDB {
+					fam[k] = cPos[cid] * stride
+				}
+				env.occFamIdx[i] = fam
+			}
+		}
 	}
-	for c := range in.Classes {
-		classDay[c] = make([]int, days)
+	return env
+}
+
+// denseClassSets переводит check/mark наборы из DB id в плотные базы ячеек
+// (плотный индекс × stride). Ссылки всегда из справочника классов, поэтому
+// miss невозможен; нулевой classSets (класс вне справочника) остаётся
+// пустым — как в исходном переборе.
+func denseClassSets(cs classSets, cPos map[int]int, stride int) (classSetsIdx, bool) {
+	toBase := func(ids []int) []int {
+		out := make([]int, len(ids))
+		for i, id := range ids {
+			idx, ok := cPos[id]
+			if !ok {
+				return nil
+			}
+			out[i] = idx * stride
+		}
+		return out
 	}
+	check := toBase(cs.check)
+	mark := toBase(cs.mark)
+	if check == nil || mark == nil {
+		return classSetsIdx{}, false
+	}
+	return classSetsIdx{check: check, mark: mark}, true
+}
+
+// backtrackDl — перебор с жёстким дедлайном ВНУТРИ поиска: на больших
+// школах (сотни уроков) один вызов перебора без проверки времени уходил
+// в экспоненциальный откат на часы, игнорируя дедлайн рестартов.
+// Проверка каждые 4096 узлов прерывает поиск — наверх идёт лучшее
+// найденное к этому моменту.
+//
+// Занятость — ПЛОСКИЕ массивы (сущность×days×slots): индекс ячейки =
+// сущность*stride + day*slots + slot. Профиль старого перебора показывал
+// до 52% времени в map-lookup-ах занятости; здесь их нет вовсе.
+func backtrackDl(env searchEnv, rng *rand.Rand, deadline time.Time) Result {
+	in, occ := env.in, env.occ
+	days, slots, stride := env.days, env.slots, env.stride
+
+	tBusy := make([]bool, env.nT*stride) // учитель занят
+	cBusy := make([]int, env.nC*stride)  // класс занят (ID предмета; 0 = свободен)
+	rBusy := make([]bool, env.nR*stride) // кабинет занят
+	tDay := make([]int, env.nT*days)     // уроков в день у учителя
+	cDay := make([]int, env.nC*days)     // уроков в день у класса
 
 	assign := make([]cell, len(occ))
 	var solution []cell
@@ -318,9 +528,9 @@ func backtrackDl(in SolveInput, occ []Occurrence, hard HardSet, days, slots int,
 			aborted = true
 			return false
 		}
-		if k == len(order) {
+		if k == len(env.order) {
 			entries := buildEntries(in, assign, occ)
-			if !validateAggregates(in, bodies, entries, days, slots) {
+			if !validateAggregates(in, env.bodies, entries, days, slots) {
 				return false
 			}
 			sol := make([]cell, len(assign))
@@ -329,13 +539,47 @@ func backtrackDl(in SolveInput, occ []Occurrence, hard HardSet, days, slots int,
 			ok = true
 			return true
 		}
-		oi := order[k]
+		oi := env.order[k]
 		o := occ[oi]
-		cs := classSetsMap[o.Lesson.ClassID]
-		cands := candidateCells(o, hard, days, slots, classBusy, cs.check, roomBusy, o.Lesson.SubjectID)
+		cs := env.occCS[oi]
+		roomIdx := env.occRoomIdx[oi]
+		subj := o.Lesson.SubjectID
+		tMaxDay := env.occTMaxDay[oi]
+		cMaxDay := env.occCMaxDay[oi]
+		tMaxCons := env.occTMaxCons[oi]
+		cMaxCons := env.occCMaxCons[oi]
+		famRule := env.occFamRule[oi]
+		famIdx := env.occFamIdx[oi]
+		tBase := env.occTIdx[oi] * stride
+		cBase := env.occCIdx[oi] * stride
+		tDayBase := env.occTIdx[oi] * days
+		cDayBase := env.occCIdx[oi] * days
+
+		// Динамическая фильтрация кандидатов в scratch-буфер: занятость
+		// учителя/класса/кабинета не меняется между итерациями уровня
+		// (метки ставятся и СНИМАются внутри итерации), поэтому фильтр
+		// достаточно вычислить один раз на узел. Проверки учителя и
+		// класса — один раз на (d,s)-слот; комнаты перебираются внутри
+		// свободного слота.
+		cands := env.candBuf[oi][:0]
+		for _, dsc := range env.staticDS[oi] {
+			ds := dsc.day*slots + dsc.slot
+			if tBusy[tBase+ds] {
+				continue
+			}
+			if !classFreeFlat(cs.check, cBusy, ds, subj) {
+				continue
+			}
+			for k2, r := range o.RoomChoices {
+				if rBusy[roomIdx[k2]*stride+ds] {
+					continue
+				}
+				cands = append(cands, cell{day: dsc.day, slot: dsc.slot, room: r, rIdx: roomIdx[k2]})
+			}
+		}
 		// Делёная половинка: ставится ПАРАЛЛЕЛЬНО своей базе — кандидаты
 		// только в слотах, где уже стоит базовый урок.
-		if baseOcc, isHalf := baseOfOcc[oi]; isHalf {
+		if baseOcc, isHalf := env.baseOfOcc[oi]; isHalf {
 			baseCell := assign[baseOcc]
 			if baseCell.room != 0 {
 				filtered := cands[:0]
@@ -348,58 +592,30 @@ func backtrackDl(in SolveInput, occ []Occurrence, hard HardSet, days, slots int,
 			}
 		}
 		shuffle(cands, rng)
-		tID := o.Lesson.TeacherID
-		cID := o.Lesson.ClassID
-		tMaxCons := teacherMaxCons[tID]
-		cMaxCons := classMaxCons[cID]
-		tMaxDay := teacherMaxDay[tID]
-		cMaxDay := classMaxDay[cID]
 		for _, cc := range cands {
-			if teacherBusy[tID][cc.day][cc.slot] {
+			ds := cc.day*slots + cc.slot
+			if tMaxDay > 0 && tDay[tDayBase+cc.day]+1 > tMaxDay {
 				continue
 			}
-			if !classFree(cs.check, classBusy, cc.day, cc.slot, o.Lesson.SubjectID) {
+			if cMaxDay > 0 && cDay[cDayBase+cc.day]+1 > cMaxDay {
 				continue
 			}
-			if roomBusy[cc.room][cc.day][cc.slot] {
+			if tMaxCons > 0 && runAtFlatBool(tBusy, tBase+cc.day*slots, cc.slot, slots) > tMaxCons {
 				continue
 			}
-			if tMaxDay > 0 && teacherDay[tID][cc.day]+1 > tMaxDay {
+			if cMaxCons > 0 && runAtFlatInt(cBusy, cBase+cc.day*slots, cc.slot, slots) > cMaxCons {
 				continue
 			}
-			if cMaxDay > 0 && classDay[cID][cc.day]+1 > cMaxDay {
+			if famRule > 0 && familyRunFlat(cBusy, famIdx, stride, cc.day, cc.slot, subj, slots, env.famScale) > famRule {
 				continue
 			}
-			if tMaxCons > 0 && runIfPlaced(teacherBusy[tID], cc.day, cc.slot) > tMaxCons {
-				continue
+			tBusy[tBase+ds] = true
+			for _, cb := range cs.mark {
+				cBusy[cb+ds] = subj
 			}
-			if cMaxCons > 0 && runIfPlacedInt(classBusy[cID], cc.day, cc.slot) > cMaxCons {
-				continue
-			}
-			if len(runRules) > 0 {
-				fam := bodies[cID]
-				if p := subParentOfClass(in.Classes, cID); p != 0 {
-					fam = bodies[p]
-				}
-				maxRun := 0
-				for _, rr := range runRules {
-					if rr.subj == 0 || rr.subj == o.Lesson.SubjectID {
-						if maxRun == 0 || rr.maxRun < maxRun {
-							maxRun = rr.maxRun
-						}
-					}
-				}
-				if maxRun > 0 && familyRunIfPlaced(classBusy, fam, cc.day, cc.slot, o.Lesson.SubjectID, slots) > maxRun {
-					continue
-				}
-			}
-			teacherBusy[tID][cc.day][cc.slot] = true
-			for _, cid := range cs.mark {
-				classBusy[cid][cc.day][cc.slot] = o.Lesson.SubjectID
-			}
-			roomBusy[cc.room][cc.day][cc.slot] = true
-			teacherDay[tID][cc.day]++
-			classDay[cID][cc.day]++
+			rBusy[cc.rIdx*stride+ds] = true
+			tDay[tDayBase+cc.day]++
+			cDay[cDayBase+cc.day]++
 			assign[oi] = cc
 			if rec(k + 1) {
 				return true
@@ -410,13 +626,13 @@ func backtrackDl(in SolveInput, occ []Occurrence, hard HardSet, days, slots int,
 				// занятости локальны для попытки и будут выброшены).
 				return false
 			}
-			teacherBusy[tID][cc.day][cc.slot] = false
-			for _, cid := range cs.mark {
-				classBusy[cid][cc.day][cc.slot] = 0
+			tBusy[tBase+ds] = false
+			for _, cb := range cs.mark {
+				cBusy[cb+ds] = 0
 			}
-			roomBusy[cc.room][cc.day][cc.slot] = false
-			teacherDay[tID][cc.day]--
-			classDay[cID][cc.day]--
+			rBusy[cc.rIdx*stride+ds] = false
+			tDay[tDayBase+cc.day]--
+			cDay[cDayBase+cc.day]--
 			// ВАЖНО: очищаем и саму ячейку — иначе после отката в assign
 			// остаётся «призрачный» урок, и частичный результат получает
 			// двойные брони (весь интерфейс краснел от конфликтов).
@@ -447,27 +663,78 @@ func backtrackDl(in SolveInput, occ []Occurrence, hard HardSet, days, slots int,
 
 type cell struct {
 	day, slot, room int
+	rIdx            int // плотный индекс кабинета (для плоской карты занятости)
 }
 
-func candidateCells(o Occurrence, hard HardSet, days, slots int, classBusy map[int][][]int, classSet []int, roomBusy map[int][][]bool, subj int) []cell {
-	var out []cell
-	for d := 0; d < days; d++ {
-		for s := 0; s < slots; s++ {
-			if hard.Forbidden(o.Lesson.TeacherID, o.Lesson.ClassID, 0, d, s) {
-				continue
-			}
-			if !classFree(classSet, classBusy, d, s, subj) {
-				continue
-			}
-			for _, r := range o.RoomChoices {
-				if roomBusy[r][d][s] {
-					continue
-				}
-				out = append(out, cell{day: d, slot: s, room: r})
+// classFreeFlat: слот свободен для урока с предметом subj. Занятость
+// хранит ID предмета: занято ТЕМ ЖЕ предметом (делёный урок, обе
+// половинки параллельно) — не блокирует; другим предметом — блокирует.
+// cb — плотные базы классов (idx*stride), ds — смещение слота.
+func classFreeFlat(check []int, cBusy []int, ds int, subj int) bool {
+	for _, cb := range check {
+		busySubj := cBusy[cb+ds]
+		if busySubj == 0 {
+			continue
+		}
+		if busySubj == subj {
+			continue // делёный предмет: обе половинки параллельно
+		}
+		return false // слот занят другим предметом этого класса
+	}
+	return true
+}
+
+// runAtFlatBool returns the length of the consecutive occupied run through
+// slot if it were occupied. base — начало дня в плоской карте.
+func runAtFlatBool(g []bool, base, slot, slots int) int {
+	cnt := 1
+	for s := slot - 1; s >= 0 && g[base+s]; s-- {
+		cnt++
+	}
+	for s := slot + 1; s < slots && g[base+s]; s++ {
+		cnt++
+	}
+	return cnt
+}
+
+func runAtFlatInt(g []int, base, slot, slots int) int {
+	cnt := 1
+	for s := slot - 1; s >= 0 && g[base+s] != 0; s-- {
+		cnt++
+	}
+	for s := slot + 1; s < slots && g[base+s] != 0; s++ {
+		cnt++
+	}
+	return cnt
+}
+
+// familyRunFlat: длина серии одинаковых предметов в сквозной шкале
+// семьи класса (родитель + подгруппы) на день d, если поставить subj
+// в слот s. Занятость семьи в слоте — первый ненулевой предмет среди
+// членов семьи; половинки в одном слоте считаются одним периодом.
+// fam — плотные базы ячеек членов семьи; day — scratch-буфер воркера:
+// вызов синхронный, рекурсия внутрь не уходит, переиспользование
+// безопасно и убирает аллокацию из самого горячего цикла перебора.
+func familyRunFlat(cBusy []int, fam []int, stride, d, s, subj, slots int, day []int) int {
+	dayBase := d * slots
+	for t := 0; t < slots; t++ {
+		day[t] = 0
+		for _, fb := range fam {
+			if v := cBusy[fb+dayBase+t]; v != 0 {
+				day[t] = v
+				break
 			}
 		}
 	}
-	return out
+	day[s] = subj
+	run := 1
+	for t := s - 1; t >= 0 && day[t] == subj; t-- {
+		run++
+	}
+	for t := s + 1; t < slots && day[t] == subj; t++ {
+		run++
+	}
+	return run
 }
 
 // HardSet holds precomputed forbidden (teacher/class/room, day, slot) cells.
@@ -664,22 +931,6 @@ func gapCount(entries []domain.ScheduleEntry, classID int) int {
 	return total
 }
 
-func newGridInt(days, slots int) [][]int {
-	g := make([][]int, days)
-	for i := range g {
-		g[i] = make([]int, slots)
-	}
-	return g
-}
-
-func newGrid(days, slots int) [][]bool {
-	g := make([][]bool, days)
-	for i := range g {
-		g[i] = make([]bool, slots)
-	}
-	return g
-}
-
 func shuffle(c []cell, rng *rand.Rand) {
 	rng.Shuffle(len(c), func(i, j int) { c[i], c[j] = c[j], c[i] })
 }
@@ -747,71 +998,6 @@ func buildClassSets(classes map[int]domain.SchoolClass) map[int]classSets {
 		res[id] = cs
 	}
 	return res
-}
-
-// familyRunIfPlaced: длина серии одинаковых предметов в сквозной шкале
-// семьи класса (родитель + подгруппы) на день d, если поставить subj
-// в слот s. Занятость семьи в слоте — первый ненулевой предмет среди
-// членов семьи; половинки в одном слоте считаются одним периодом.
-func familyRunIfPlaced(classBusy map[int][][]int, family []int, d, s, subj, slots int) int {
-	day := make([]int, slots)
-	for t := 0; t < slots; t++ {
-		for _, cid := range family {
-			if v := classBusy[cid][d][t]; v != 0 {
-				day[t] = v
-				break
-			}
-		}
-	}
-	day[s] = subj
-	run := 1
-	for t := s - 1; t >= 0 && day[t] == subj; t-- {
-		run++
-	}
-	for t := s + 1; t < slots && day[t] == subj; t++ {
-		run++
-	}
-	return run
-}
-
-// classFree: слот свободен для урока с предметом subj. Занятость
-// хранит ID предмета: занято ТЕМ ЖЕ предметом (делёный урок, обе
-// половинки параллельно) — не блокирует; другим предметом — блокирует.
-func classFree(cset []int, classBusy map[int][][]int, d, s int, subj int) bool {
-	for _, cid := range cset {
-		busySubj := classBusy[cid][d][s]
-		if busySubj == 0 {
-			continue
-		}
-		if busySubj == subj {
-			continue // делёный предмет: обе половинки параллельно
-		}
-		return false // слот занят другим предметом этого класса
-	}
-	return true
-}
-
-// runIfPlaced returns the length of the consecutive occupied run through (day,slot) if it were occupied.
-func runIfPlacedInt(g [][]int, day, slot int) int {
-	cnt := 1
-	for s := slot - 1; s >= 0 && g[day][s] != 0; s-- {
-		cnt++
-	}
-	for s := slot + 1; s < len(g[day]) && g[day][s] != 0; s++ {
-		cnt++
-	}
-	return cnt
-}
-
-func runIfPlaced(g [][]bool, day, slot int) int {
-	cnt := 1
-	for s := slot - 1; s >= 0 && g[day][s]; s-- {
-		cnt++
-	}
-	for s := slot + 1; s < len(g[day]) && g[day][s]; s++ {
-		cnt++
-	}
-	return cnt
 }
 
 func buildEntries(in SolveInput, assign []cell, occ []Occurrence) []domain.ScheduleEntry {
