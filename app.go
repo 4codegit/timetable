@@ -223,33 +223,36 @@ func (a *App) ListConstraints(schoolID int) ([]domain.Constraint, error) {
 
 // ---- Scheduling ----
 
-// Generate runs the CSP solver and persists the result.
-func (a *App) Generate(schoolID, days, slots, daysMask int) (*solver.Result, error) {
+// loadSolveInput собирает SolveInput из хранилища (общее для Generate и
+// GeneratePrecise — раньше два одинаковых блока загрузки дублировались).
+func (a *App) loadSolveInput(schoolID, days, slots, daysMask int) (solver.SolveInput, error) {
 	lessons, err := a.store.ListLessons(schoolID)
 	if err != nil {
-		return nil, err
+		return solver.SolveInput{}, err
 	}
 	ts, _ := a.store.ListTeachers(schoolID)
 	cs, _ := a.store.ListClasses(schoolID)
 	rs, _ := a.store.ListRooms(schoolID)
 	subs, _ := a.store.ListSubjects(schoolID)
 	cons, _ := a.store.ListConstraints(schoolID)
-
-	teacherMap := toTeacherMap(ts)
-	classMap := toClassMap(cs)
-	subjMap := toSubjMap(subs)
-
-	in := solver.SolveInput{
+	return solver.SolveInput{
 		SchoolID:    schoolID,
 		Lessons:     lessons,
-		Teachers:    teacherMap,
-		Classes:     classMap,
+		Teachers:    toTeacherMap(ts),
+		Classes:     toClassMap(cs),
 		Rooms:       rs,
-		Subjects:    subjMap,
+		Subjects:    toSubjMap(subs),
 		Constraints: cons,
 		Config:      domain.SchedulingConfig{DaysPerWeek: days, SlotsPerDay: slots, DaysMask: daysMask},
-	}
+	}, nil
+}
 
+// Generate runs the CSP solver and persists the result.
+func (a *App) Generate(schoolID, days, slots, daysMask int) (*solver.Result, error) {
+	in, err := a.loadSolveInput(schoolID, days, slots, daysMask)
+	if err != nil {
+		return nil, err
+	}
 	res := solver.Solve(a.ctx, in, runtime.NumCPU(), 30*time.Second)
 
 	err = a.store.ReplaceSchedule(schoolID, res.Entries)
@@ -290,27 +293,10 @@ func (a *App) ReplaceSchedule(schoolID int, entries []domain.ScheduleEntry) erro
 // GeneratePrecise prefers the OR-Tools CP-SAT solver (when compiled with -tags ortools),
 // otherwise falls back to the pure-Go backtracking solver.
 func (a *App) GeneratePrecise(schoolID, days, slots, daysMask int) (*solver.Result, error) {
-	lessons, err := a.store.ListLessons(schoolID)
+	in, err := a.loadSolveInput(schoolID, days, slots, daysMask)
 	if err != nil {
 		return nil, err
 	}
-	ts, _ := a.store.ListTeachers(schoolID)
-	cs, _ := a.store.ListClasses(schoolID)
-	rs, _ := a.store.ListRooms(schoolID)
-	subs, _ := a.store.ListSubjects(schoolID)
-	cons, _ := a.store.ListConstraints(schoolID)
-
-	in := solver.SolveInput{
-		SchoolID:    schoolID,
-		Lessons:     lessons,
-		Teachers:    toTeacherMap(ts),
-		Classes:     toClassMap(cs),
-		Rooms:       rs,
-		Subjects:    toSubjMap(subs),
-		Constraints: cons,
-		Config:      domain.SchedulingConfig{DaysPerWeek: days, SlotsPerDay: slots, DaysMask: daysMask},
-	}
-
 	res := solver.SolvePrecise(a.ctx, in, runtime.NumCPU(), 12*time.Second)
 	if err := a.store.ReplaceSchedule(schoolID, res.Entries); err != nil {
 		return nil, err
@@ -561,6 +547,13 @@ func (a *App) ExportPDF(schoolID int, optionsJSON string) (string, error) {
 		slots = 8
 	}
 
+	// Общие map-резолверы: O(1) вместо линейного скана (PDF зовёт их на
+	// каждую ячейку каждой строки — на большой школе сотни тысяч вызовов).
+	subjByID := toSubjMap(subs)
+	teachByID := toTeacherMap(ts)
+	classByID := toClassMap(cs)
+	roomByID := toRoomMap(rs)
+
 	// Resolve mode → row list.
 	var rows []pdf.Row
 	switch opts.Mode {
@@ -580,14 +573,7 @@ func (a *App) ExportPDF(schoolID int, optionsJSON string) (string, error) {
 				hasLessons[*c.SubgroupOf] = true
 			}
 		}
-		roomName := func(roomID int) string {
-			for _, r := range rs {
-				if r.ID == roomID {
-					return r.Name
-				}
-			}
-			return ""
-		}
+		roomName := func(roomID int) string { return roomByID[roomID].Name }
 		for _, c := range cs {
 			// Подгруппы рисуются внутри таблицы родителя (разделённые
 			// ячейки) — отдельных таблиц для них не создаём.
@@ -689,14 +675,13 @@ func (a *App) ExportPDF(schoolID int, optionsJSON string) (string, error) {
 	}
 
 	// subParentID: id родителя, если класс — подгруппа (иначе 0).
-	subParentID := func(classID int) int {
-		for _, c := range cs {
-			if c.ID == classID && c.SubgroupOf != nil {
-				return *c.SubgroupOf
-			}
+	subParent := map[int]int{} // classID → родитель (0 = не подгруппа)
+	for _, c := range cs {
+		if c.SubgroupOf != nil {
+			subParent[c.ID] = *c.SubgroupOf
 		}
-		return 0
 	}
+	subParentID := func(classID int) int { return subParent[classID] }
 
 	// Build a lookup so CellAt is O(1) per (row, day, slot).
 	// В ячейке может быть несколько уроков — параллельные подгруппы
@@ -746,39 +731,31 @@ func (a *App) ExportPDF(schoolID int, optionsJSON string) (string, error) {
 		}
 	}
 
-	// Resolvers.
+	// Resolvers — замыкания поверх map (см. комментарий у map-ов выше).
 	subjName := func(id int) string {
-		for _, s := range subs {
-			if s.ID == id {
-				return s.Name
-			}
+		if s, ok := subjByID[id]; ok {
+			return s.Name
 		}
 		return "?"
 	}
 	teachName := func(id int) string {
-		for _, t := range ts {
-			if t.ID == id {
-				if t.ShortName != "" {
-					return t.ShortName
-				}
-				return t.Name
+		if t, ok := teachByID[id]; ok {
+			if t.ShortName != "" {
+				return t.ShortName
 			}
+			return t.Name
 		}
 		return "?"
 	}
 	className := func(id int) string {
-		for _, c := range cs {
-			if c.ID == id {
-				return c.Name
-			}
+		if c, ok := classByID[id]; ok {
+			return c.Name
 		}
 		return "?"
 	}
 	roomName := func(id int) string {
-		for _, r := range rs {
-			if r.ID == id {
-				return r.Name
-			}
+		if r, ok := roomByID[id]; ok {
+			return r.Name
 		}
 		return "?"
 	}

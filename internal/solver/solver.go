@@ -318,16 +318,34 @@ func buildSearchEnv(in SolveInput, days, slots int) searchEnv {
 			}
 		}
 	}
-	// occ idx последнего вхождения каждого урока (база часов > 1).
-	occIdxByLesson := map[int]int{}
+	// Пары делёных уроков: k-е вхождение половинки ↔ k-е вхождение базы
+	// (вхождения одного урока идут подряд — buildOccurrences). Раньше все
+	// вхождения половинки приковывались к ПОСЛЕДНЕМУ вхождению базы: при
+	// часах ≥ 2 второе вхождение половинки не могло встать параллельно
+	// первому (тот же класс дважды в слоте) — делёный урок с 2+ часами
+	// не размещался вовсе. Для часов = 1 (обычный случай) пары те же,
+	// поведение не меняется.
+	firstOcc := map[int]int{} // lessonID → индекс первого вхождения
+	occCount := map[int]int{} // lessonID → число вхождений
 	for i := range occ {
-		occIdxByLesson[occ[i].Lesson.ID] = i
+		lid := occ[i].Lesson.ID
+		if _, ok := firstOcc[lid]; !ok {
+			firstOcc[lid] = i
+		}
+		occCount[lid]++
 	}
 	for i := range occ {
-		if base, ok := halfOfLesson[occ[i].Lesson.ID]; ok {
-			if bj, ok2 := occIdxByLesson[base]; ok2 {
-				env.baseOfOcc[i] = bj
-			}
+		lid := occ[i].Lesson.ID
+		base, isHalf := halfOfLesson[lid]
+		if !isHalf {
+			continue
+		}
+		bi, ok := firstOcc[base]
+		if !ok {
+			continue
+		}
+		if k := i - firstOcc[lid]; k >= 0 && k < occCount[base] {
+			env.baseOfOcc[i] = bi + k
 		}
 	}
 

@@ -20,6 +20,31 @@
 
         let teachers = [], subjects = [], classes = [], rooms = [], lessons = [], constraints = [], schedule = [];
 
+        // O(1)-резолверы имён: раньше subjName/teachName/... делали
+        // Array.find по справочнику на КАЖДУЮ ячейку сетки (сотни тысяч
+        // сканов на большом расписании). Сигнатуры (list, id) сохранены —
+        // список остаётся синтаксической зависимостью для реактивности.
+        let subjectById = new Map(), teacherById = new Map(), classById = new Map(), roomById = new Map();
+        $: {
+                subjectById = new Map(subjects.map((s) => [s.id, s]));
+                teacherById = new Map(teachers.map((t) => [t.id, t]));
+                classById = new Map(classes.map((c) => [c.id, c]));
+                roomById = new Map(rooms.map((r) => [r.id, r]));
+        }
+        // Подгруппы класса: classID → [id подгрупп]. Для cellSubs —
+        // раньше фильтровали весь список классов на каждый вызов.
+        let kidsOf = new Map();
+        $: {
+                const m = new Map();
+                for (const c of classes) {
+                        if (c.subgroup_of) {
+                                if (!m.has(c.subgroup_of)) m.set(c.subgroup_of, []);
+                                m.get(c.subgroup_of).push(c.id);
+                        }
+                }
+                kidsOf = m;
+        }
+
         // form models
         let t = { name: "", short_name: "", max_hours_per_week: 30 };
         let s = { name: "", short_name: "", requires_room_type: "any" };
@@ -177,6 +202,32 @@
         // `conflictIDs` internally, but the compiler cannot see inside the
         // function — so we pass them as explicit arguments to make them real
         // dependencies. Any change to the schedule now rebuilds the grid.
+        //
+        // Индекс расписания: `${kind}|${id}|${day}|${slot}` → записи в
+        // порядке schedule. Раньше cellAt/cellSubs сканировали ВЕСЬ schedule
+        // на каждую ячейку (а cellSubs ещё и звал cellAt дважды на каждую
+        // запись — квадрат на каждый рендер сетки). Реактивный стейтмент
+        // стоит ПЕРЕД $: grid: cellAt читает scheduleIndex, и grid должен
+        // пересчитаться после него.
+        function cellKey(kind, id, day, slot) { return kind + "|" + id + "|" + day + "|" + slot; }
+        function idxPut(idx, kind, id, d, s, en) {
+                const k = cellKey(kind, id, d, s);
+                const arr = idx.get(k);
+                if (arr) arr.push(en); else idx.set(k, [en]);
+        }
+        function buildScheduleIndex(schedule) {
+                const idx = new Map();
+                const pos = new Map(); // id записи → позиция в schedule (порядок ячеек)
+                for (let i = 0; i < schedule.length; i++) {
+                        const en = schedule[i];
+                        pos.set(en.id, i);
+                        idxPut(idx, "class", en.class_id, en.day_of_week, en.timeslot, en);
+                        idxPut(idx, "teacher", en.teacher_id, en.day_of_week, en.timeslot, en);
+                        if (en.room_id) idxPut(idx, "room", en.room_id, en.day_of_week, en.timeslot, en);
+                }
+                return { idx, pos };
+        }
+        $: scheduleIndex = buildScheduleIndex(schedule);
         $: grid = buildGrid(schedule, visibleRows, kind, activeDayIdx, slots, conflictIDs);
         function buildGrid(schedule, visibleRows, viewMode, activeDayIdx, slots, conflictIDs) {
                 void schedule; void conflictIDs; // (dependencies — see comment above)
@@ -371,10 +422,7 @@
                 // Делёные уроки: запись половинки, у которой в этом же слоте
                 // нет сестринской записи, стоит не параллельно — конфликт.
                 const twinOfLesson = {};
-                for (const l of lessons) {
-                        const t = dividedTwinLesson(l.id);
-                        if (t) twinOfLesson[l.id] = t.id;
-                }
+                for (const [lid, t] of dividedTwinOf) twinOfLesson[lid] = t.id;
                 const halfAt = {};
                 for (const e of schedule) {
                         if (!twinOfLesson[e.lesson_id]) continue;
@@ -444,7 +492,7 @@
                 }
                 // Делёные уроки: половинки без пары в своём слоте.
                 for (const e of schedule) {
-                        const twinId = (() => { const l = lessons.find((x) => x.id === e.lesson_id); return l ? (dividedTwinLesson(l.id)?.id || 0) : 0; })();
+                        const twinId = dividedTwinOf.get(e.lesson_id)?.id || 0;
                         if (!twinId) continue;
                         const hasTwin = schedule.some((x) => x.lesson_id === twinId
                                 && x.day_of_week === e.day_of_week && x.timeslot === e.timeslot);
@@ -908,75 +956,90 @@
                 window.removeEventListener("keydown", onGlobalKeydown, true);
         }
         onMount(() => { attachDragListeners(); detectPreciseSolver(); return () => detachDragListeners(); });
-        // cellSubs: остальные уроки в той же ячейке (параллельные подгруппы).
-        function cellSubs(kind, id, day, slot) {
-                const out = [];
-                const kids = kind === "class" ? classes.filter((c) => c.subgroup_of === id).map((c) => c.id) : [];
-                for (const en of schedule) {
-                        const match =
-                                (kind === "teacher" ? en.teacher_id === id : kind === "room" ? en.room_id === id : false) ||
-                                (kind === "class" && (en.class_id === id || kids.includes(en.class_id)));
-                        if (match && en.day_of_week === day && en.timeslot === slot && (!cellAt(kind, id, day, slot) || en.id !== cellAt(kind, id, day, slot).id)) {
-                                out.push(en);
-                        }
-                }
-                return out;
-        }
-        // Тело класса: сам класс + его подгруппы.
-        function classBody(classId) {
-                const body = [classId];
-                for (const c of classes) if (c.subgroup_of === classId) body.push(c.id);
-                return body;
-        }
-        function subParentOf(classId) {
-                const c = classes.find((x) => x.id === classId);
-                return c?.subgroup_of || null;
-        }
-        // Делёная пара (модель aSc): у урока подгруппы есть «сестринский»
-        // урок ТОГО ЖЕ предмета у другой подгруппы того же родителя.
-        // Половинки обязаны стоять параллельно и двигаться как группа.
-        function dividedTwinLesson(lessonId) {
-                const l = lessons.find((x) => x.id === lessonId);
-                if (!l) return null;
-                const parent = subParentOf(l.class_id);
-                if (!parent) return null;
-                return lessons.find((x) => x.id !== l.id
-                        && x.subject_id === l.subject_id
-                        && subParentOf(x.class_id) === parent) || null;
-        }
         function cellAt(kind, id, day, slot) {
-                const e = schedule.find((en) => {
-                        let match;
-                        if (kind === "class") match = en.class_id === id;
-                        else if (kind === "teacher") match = en.teacher_id === id;
-                        else match = en.room_id === id;
-                        return match && en.day_of_week === day && en.timeslot === slot;
-                });
-                if (!e) return null;
+                const arr = scheduleIndex.idx.get(cellKey(kind, id, day, slot));
+                if (!arr || !arr.length) return null;
+                const e = arr[0];
                 return {
                         id: e.id,
                         subject_id: e.subject_id,
                         teacher_id: e.teacher_id,
                         room_id: e.room_id,
                         conflict: conflictIDs.has(e.id),
-                        label: subjName(subjects, e.subject_id) + " (" + teachName(teachers, e.teacher_id) + ") " + (rooms.find(r => r.id === e.room_id)?.name || "")
+                        label: subjName(subjects, e.subject_id) + " (" + teachName(teachers, e.teacher_id) + ") " + (roomById.get(e.room_id)?.name || "")
                 };
         }
 
+        // cellSubs: остальные уроки в той же ячейке (параллельные подгруппы,
+        // либо дубль-конфликт того же учителя/кабинета). Первая запись под
+        // ключом — сама ячейка (cellAt) и исключается; для класса ячейка
+        // родителя дополнительно читает ключи его подгрупп.
+        function cellSubs(kind, id, day, slot) {
+                const { idx, pos } = scheduleIndex;
+                const self = idx.get(cellKey(kind, id, day, slot)) || [];
+                const excludeId = self.length ? self[0].id : -1;
+                if (kind !== "class") {
+                        return self.filter((en) => en.id !== excludeId);
+                }
+                const merged = self.slice();
+                for (const kid of (kidsOf.get(id) || [])) {
+                        const kidArr = idx.get(cellKey("class", kid, day, slot));
+                        if (kidArr) for (const en of kidArr) merged.push(en);
+                }
+                merged.sort((a, b) => pos.get(a.id) - pos.get(b.id));
+                return merged.filter((en) => en.id !== excludeId);
+        }
+        // Тело класса: сам класс + его подгруппы.
+        function classBody(classId) {
+                return [classId, ...(kidsOf.get(classId) || [])];
+        }
+        function subParentOf(classId) {
+                return classById.get(classId)?.subgroup_of || null;
+        }
+        // Делёная пара (модель aSc): у урока подгруппы есть «сестринский»
+        // урок ТОГО ЖЕ предмета у другой подгруппы того же родителя.
+        // Половинки обязаны стоять параллельно и двигаться как группа.
+        // Индекс строится реактивно — раньше dividedTwinLesson делал
+        // два Array.find по урокам на каждый вызов (квадрат в подсчёте
+        // конфликтов).
+        let dividedTwinOf = new Map();
+        $: {
+                void classes; // зависимость: subParentOf читает classById
+                const m = new Map();
+                const byKey = new Map(); // `${parent}|${subject}` → первый урок семьи
+                for (const l of lessons) {
+                        const parent = subParentOf(l.class_id);
+                        if (!parent) continue;
+                        const key = parent + "|" + l.subject_id;
+                        const first = byKey.get(key);
+                        if (first) {
+                                // пара ссылается друг на друга; при 3+ подгруппах
+                                // первый остаётся со второй (как в исходном поиске)
+                                m.set(l.id, first);
+                                if (!m.has(first.id)) m.set(first.id, l);
+                        } else {
+                                byKey.set(key, l);
+                        }
+                }
+                dividedTwinOf = m;
+        }
+        function dividedTwinLesson(lessonId) {
+                return dividedTwinOf.get(lessonId) || null;
+        }
         // Компактная подпись для обзора «вся школа»: краткое имя предмета
         // (short_name, если задан) — полный контекст в подсказке ячейки.
         function isSubRow(id) {
-                const c = classes.find((x) => x.id === id);
+                const c = classById.get(id);
                 return !!(c && c.subgroup_of);
         }
         // Имя родителя, если класс — подгруппа.
         function subParentName(id) {
-                const c = classes.find((x) => x.id === id);
+                const c = classById.get(id);
                 if (!c || !c.subgroup_of) return null;
-                return classes.find((x) => x.id === c.subgroup_of)?.name || null;
+                return classById.get(c.subgroup_of)?.name || null;
         }
         function subjShort(list, id) {
-                const s = list.find((x) => x.id === id);
+                const s = subjectById.get(id);
                 if (!s) return "?";
                 return s.short_name || s.name;
         }
@@ -1137,10 +1200,12 @@
                 }
         }
 
-        function className(list, id) { const x = list.find(c => c.id === id); return x ? x.name : "?"; }
-        function roomName(list, id) { const x = list.find(r => r.id === id); return x ? x.name : "?"; }
-        function subjName(list, id) { const x = list.find(s => s.id === id); return x ? x.name : "?"; }
-        function teachName(list, id) { const x = list.find(t => t.id === id); return x ? (x.short_name || x.name) : "?"; }
+        // Резолверы имён — O(1) через map (list остаётся в сигнатуре как
+        // синтаксическая зависимость реактивности, сам не используется).
+        function className(list, id) { const x = classById.get(id); return x ? x.name : "?"; }
+        function roomName(list, id) { const x = roomById.get(id); return x ? x.name : "?"; }
+        function subjName(list, id) { const x = subjectById.get(id); return x ? x.name : "?"; }
+        function teachName(list, id) { const x = teacherById.get(id); return x ? (x.short_name || x.name) : "?"; }
         function dayName(d) { return ["Пн","Вт","Ср","Чт","Пт","Сб","Вс"][d] || ("Д" + (d + 1)); }
         function sI(i) { return i + 1; }
         function periodLabel(si) { const p = bellPeriods[si]; return p && p.start ? p.start + "–" + p.end : ""; }
