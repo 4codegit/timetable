@@ -23,21 +23,9 @@ type cConstraint struct {
 	isHard     int32
 }
 
-type cScheduleResult struct {
-	count      int32
-	lessonIDs  *int32
-	classIDs   *int32
-	teacherIDs *int32
-	subjectIDs *int32
-	roomIDs    *int32
-	days       *int32
-	slots      *int32
-}
-
 type ortoolsDLL struct {
-	mod    *syscall.LazyDLL
-	solve  *syscall.LazyProc
-	freeFn *syscall.LazyProc
+	mod   *syscall.LazyDLL
+	solve *syscall.LazyProc
 }
 
 var loadedDLL *ortoolsDLL
@@ -48,11 +36,17 @@ func loadDLL() (*ortoolsDLL, error) {
 	}
 	mod := syscall.NewLazyDLL("ortools_csat.dll")
 	d := &ortoolsDLL{
-		mod:    mod,
-		solve:  mod.NewProc("ortools_solve"),
-		freeFn: mod.NewProc("free_schedule_result"),
+		mod:   mod,
+		solve: mod.NewProc("ortools_solve_out"),
 	}
 	if err := mod.Load(); err != nil {
+		return nil, err
+	}
+	// Проверка функции заранее: у LazyProc.Call отсутствующая процедура
+	// вызывает панику. Старый ortools_csat.dll (без ortools_solve_out)
+	// рядом с новым exe должен тихо увести на эвристический решатель,
+	// а не уронить приложение.
+	if err := d.solve.Find(); err != nil {
 		return nil, err
 	}
 	loadedDLL = d
@@ -85,12 +79,14 @@ func ortoolsSolve(in SolveInput, parallelism int, timeout time.Duration) (Result
 	lclass := make([]int32, maxInt(nl, 1))
 	lteacher := make([]int32, maxInt(nl, 1))
 	lsubject := make([]int32, maxInt(nl, 1))
+	occCount := 0
 	for i, l := range in.Lessons {
-		h := int32(l.HoursPerWeek)
+		h := l.HoursPerWeek
 		if h < 1 {
 			h = 1
 		}
-		hours[i] = h
+		hours[i] = int32(h)
+		occCount += h
 		lclass[i] = int32(l.ClassID)
 		lteacher[i] = int32(l.TeacherID)
 		lsubject[i] = int32(l.SubjectID)
@@ -120,8 +116,12 @@ func ortoolsSolve(in SolveInput, parallelism int, timeout time.Duration) (Result
 	}
 
 	nr := len(in.Rooms)
-	roomIDs := make([]int32, maxInt(nr, 1))
-	roomTypes := make([]int32, maxInt(nr, 1))
+	// Ничего не планируем без уроков/кабинетов (C вернул бы 0).
+	if nl == 0 || occCount == 0 || nr == 0 {
+		return Result{Entries: nil, Placed: 0, Total: occCount, Violations: 0}, true
+	}
+	roomIDs := make([]int32, nr)
+	roomTypes := make([]int32, nr)
 	for i, r := range in.Rooms {
 		roomIDs[i] = int32(r.ID)
 		roomTypes[i] = assignType(r.RoomType)
@@ -161,6 +161,17 @@ func ortoolsSolve(in SolveInput, parallelism int, timeout time.Duration) (Result
 	}
 	tlim := int32(timeout.Milliseconds())
 
+	// Выходные буферы выделяет Go, C в них только пишет: нет ручного free
+	// и нет конверсии uintptr → unsafe.Pointer (результат из DLL).
+	outLesson := make([]int32, occCount)
+	outClass := make([]int32, occCount)
+	outTeacher := make([]int32, occCount)
+	outSubject := make([]int32, occCount)
+	outRoom := make([]int32, occCount)
+	outDay := make([]int32, occCount)
+	outSlot := make([]int32, occCount)
+	outCount := int32(0)
+
 	r1, _, _ := d.solve.Call(
 		uintptr(nl),
 		uintptr(unsafe.Pointer(&hours[0])),
@@ -177,43 +188,53 @@ func ortoolsSolve(in SolveInput, parallelism int, timeout time.Duration) (Result
 		uintptr(unsafe.Pointer(&cts[0])),
 		uintptr(tlim),
 		uintptr(workers),
+		uintptr(unsafe.Pointer(&outLesson[0])),
+		uintptr(unsafe.Pointer(&outClass[0])),
+		uintptr(unsafe.Pointer(&outTeacher[0])),
+		uintptr(unsafe.Pointer(&outSubject[0])),
+		uintptr(unsafe.Pointer(&outRoom[0])),
+		uintptr(unsafe.Pointer(&outDay[0])),
+		uintptr(unsafe.Pointer(&outSlot[0])),
+		uintptr(occCount),
+		uintptr(unsafe.Pointer(&outCount)),
 	)
+	runtime.KeepAlive(outLesson)
 	if r1 == 0 {
 		return Result{}, false
 	}
-	res := (*cScheduleResult)(unsafe.Pointer(r1))
-	defer d.freeFn.Call(r1)
 
-	n := int(res.count)
-	lessonIDs := unsafe.Slice((*int32)(res.lessonIDs), n)
-	classIDs := unsafe.Slice((*int32)(res.classIDs), n)
-	teacherIDs := unsafe.Slice((*int32)(res.teacherIDs), n)
-	subjectIDs := unsafe.Slice((*int32)(res.subjectIDs), n)
-	roomIDsOut := unsafe.Slice((*int32)(res.roomIDs), n)
-	dayArr := unsafe.Slice((*int32)(res.days), n)
-	slotArr := unsafe.Slice((*int32)(res.slots), n)
-
+	n := int(outCount)
+	if n > occCount {
+		n = occCount
+	}
 	entries := make([]domain.ScheduleEntry, 0, n)
 	placed := 0
 	for i := 0; i < n; i++ {
-		if int(dayArr[i]) < 0 {
+		if outDay[i] < 0 {
 			continue // урок не удалось разместить (перегруженная школа)
 		}
 		placed++
+		// bind.cpp отдаёт ИНДЕКС урока в in.Lessons. Проверка границ
+		// обязательна: без неё неожиданное значение из DLL валит exe
+		// паникой (index out of range) вместо пропуска записи.
+		li := int(outLesson[i])
+		if li < 0 || li >= nl {
+			continue
+		}
 		// When no rooms are defined the solver outputs room_id=0 which
 		// does not exist in the database — skip to avoid FK constraint error.
-		if len(in.Rooms) == 0 && int(roomIDsOut[i]) == 0 {
+		if len(in.Rooms) == 0 && outRoom[i] == 0 {
 			continue
 		}
 		entries = append(entries, domain.ScheduleEntry{
 			SchoolID:  in.SchoolID,
-			LessonID:  in.Lessons[int(lessonIDs[i])].ID,
-			ClassID:   int(classIDs[i]),
-			TeacherID: int(teacherIDs[i]),
-			SubjectID: int(subjectIDs[i]),
-			RoomID:    int(roomIDsOut[i]),
-			DayOfWeek: int(dayArr[i]),
-			Timeslot:  int(slotArr[i]),
+			LessonID:  in.Lessons[li].ID,
+			ClassID:   int(outClass[i]),
+			TeacherID: int(outTeacher[i]),
+			SubjectID: int(outSubject[i]),
+			RoomID:    int(outRoom[i]),
+			DayOfWeek: int(outDay[i]),
+			Timeslot:  int(outSlot[i]),
 		})
 	}
 	return Result{Entries: entries, Placed: placed, Total: n, Violations: 0}, true

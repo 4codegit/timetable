@@ -36,7 +36,11 @@ typedef struct {
 
 /* Runs OR-Tools CP-SAT. Returns NULL if infeasible / unavailable.
    Arrays are caller-owned except the returned ScheduleResult (freed via free_schedule_result).
-   room_type / lesson_req_type use 0 for "any", otherwise a stable integer id per type string. */
+   room_type / lesson_req_type use 0 for "any", otherwise a stable integer id per type string.
+
+   Предпочтительная точка входа — ortools_solve_out: C не выделяет памяти,
+   решение пишется в буферы вызывающей стороны (Go), ручной free не нужен.
+   Совместимая ortools_solve оставлена для старых сборок. */
 ORTOOLS_EXPORT ScheduleResult* ortools_solve(
    int num_lessons,
    const int* lesson_hours,
@@ -55,6 +59,37 @@ ORTOOLS_EXPORT ScheduleResult* ortools_solve(
    int workers);
 
 ORTOOLS_EXPORT void free_schedule_result(ScheduleResult* r);
+
+/* ortools_solve_out: то же решение, но в выходные буферы (по одному на
+   поле), которые выделяет вызывающая сторона. capacity — вместимость
+   КАЖДОГО буфера (число вхождений уроков, Go считает его так же), запись
+   ограничена capacity. Возвращает 1, если решение есть (тогда *out_count —
+   число записей; day=-1 у неразмещённых), иначе 0 и *out_count = 0. */
+ORTOOLS_EXPORT int ortools_solve_out(
+   int num_lessons,
+   const int* lesson_hours,
+   const int* lesson_class,
+   const int* lesson_teacher,
+   const int* lesson_subject,
+   const int* lesson_req_type,
+   int num_rooms,
+   const int* room_ids,
+   const int* room_type,
+   int days_per_week,
+   int slots_per_day,
+   int num_constraints,
+   const CConstraint* constraints,
+   int time_limit_ms,
+   int workers,
+   int* out_lesson,
+   int* out_class,
+   int* out_teacher,
+   int* out_subject,
+   int* out_room,
+   int* out_day,
+   int* out_slot,
+   int capacity,
+   int* out_count);
 
 #ifdef __cplusplus
 }

@@ -23,13 +23,21 @@ struct Occ {
 };
 }  // namespace
 
-extern "C" ScheduleResult* ortools_solve(
-    int num_lessons, const int* lesson_hours, const int* lesson_class,
-    const int* lesson_teacher, const int* lesson_subject,
-    const int* lesson_req_type, int num_rooms, const int* room_ids,
-    const int* room_type, int days_per_week, int slots_per_day,
-    int num_constraints, const CConstraint* constraints, int time_limit_ms,
-    int workers) {
+namespace {
+
+// Результат: по одной записи на вхождение урока (-1 в day = не размещён).
+struct Solution {
+  bool ok = false;
+  std::vector<int> lesson, cls, teacher, subject, room, day, slot;
+};
+
+Solution solve_impl(int num_lessons, const int* lesson_hours,
+                    const int* lesson_class, const int* lesson_teacher,
+                    const int* lesson_subject, const int* lesson_req_type,
+                    int num_rooms, const int* room_ids, const int* room_type,
+                    int days_per_week, int slots_per_day, int num_constraints,
+                    const CConstraint* constraints, int time_limit_ms,
+                    int workers) {
   CpModelBuilder cp;
 
   std::vector<Occ> occ;
@@ -44,7 +52,7 @@ extern "C" ScheduleResult* ortools_solve(
   }
   const int O = static_cast<int>(occ.size());
   const int D = days_per_week, S = slots_per_day, R = num_rooms;
-  if (O == 0 || D == 0 || S == 0 || R == 0) return nullptr;
+  if (O == 0 || D == 0 || S == 0 || R == 0) return Solution{};
 
   // entity -> occurrence indices
   std::map<int, std::vector<int>> teacherOccs, classOccs, lessonOccs;
@@ -391,44 +399,127 @@ extern "C" ScheduleResult* ortools_solve(
   }
   if (response.status() != CpSolverStatus::OPTIMAL &&
       response.status() != CpSolverStatus::FEASIBLE) {
-    return nullptr;
+    return Solution{};
   }
 
-  ScheduleResult* res =
-      static_cast<ScheduleResult*>(malloc(sizeof(ScheduleResult)));
-  res->count = O;
-  res->lesson_ids = static_cast<int*>(malloc(sizeof(int) * O));
-  res->class_ids = static_cast<int*>(malloc(sizeof(int) * O));
-  res->teacher_ids = static_cast<int*>(malloc(sizeof(int) * O));
-  res->subject_ids = static_cast<int*>(malloc(sizeof(int) * O));
-  res->room_ids = static_cast<int*>(malloc(sizeof(int) * O));
-  res->days = static_cast<int*>(malloc(sizeof(int) * O));
-  res->slots = static_cast<int*>(malloc(sizeof(int) * O));
-
+  Solution sol;
+  sol.ok = true;
+  sol.lesson.resize(O);
+  sol.cls.resize(O);
+  sol.teacher.resize(O);
+  sol.subject.resize(O);
+  sol.room.resize(O);
+  sol.day.assign(O, -1);
+  sol.slot.assign(O, -1);
   for (int o = 0; o < O; ++o) {
     bool found = false;
     for (int d = 0; d < D && !found; ++d) {
       for (int s = 0; s < S && !found; ++s) {
         for (int r = 0; r < R && !found; ++r) {
-           if (response.solution(x[o][d][s][r].index()) > 0) {
-            res->lesson_ids[o] = occ[o].lesson;
-            res->class_ids[o] = occ[o].cls;
-            res->teacher_ids[o] = occ[o].teacher;
-            res->subject_ids[o] = occ[o].subject;
-            res->room_ids[o] = room_ids[r];
-            res->days[o] = d;
-            res->slots[o] = s;
+          if (response.solution(x[o][d][s][r].index()) > 0) {
+            sol.lesson[o] = occ[o].lesson;
+            sol.cls[o] = occ[o].cls;
+            sol.teacher[o] = occ[o].teacher;
+            sol.subject[o] = occ[o].subject;
+            sol.room[o] = room_ids[r];
+            sol.day[o] = d;
+            sol.slot[o] = s;
             found = true;
           }
         }
       }
     }
-    if (!found) {
-      // Перегруженная школа: урок не удалось разместить — помечаем
-      // days=-1, чтобы Go-сторона пропустила эту запись (иначе мусор
-      // из malloc попадал в результат и ломал FOREIGN KEY).
-      res->days[o] = -1;
-    }
+    // Перегруженная школа: урок не удалось разместить — day остаётся -1,
+    // Go-сторона пропускает запись (иначе мусор ломал бы FOREIGN KEY).
+  }
+  return sol;
+}
+
+// Копирование решения в буферы, выделенные вызывающей стороной (Go).
+// Возвращает 1, если решение есть, и *out_count = число вхождений.
+// Буферы вмещают не меньше вхождений (Go считает их так же), но запись
+// всё равно ограничена capacity — выход за буфер Go-кучи недопустим.
+static int write_solution(const Solution& sol, int* out_lesson, int* out_class,
+                          int* out_teacher, int* out_subject, int* out_room,
+                          int* out_day, int* out_slot, int capacity,
+                          int* out_count) {
+  if (!sol.ok) {
+    if (out_count) *out_count = 0;
+    return 0;
+  }
+  const int n = static_cast<int>(sol.lesson.size());
+  const int m = (n < capacity) ? n : capacity;
+  for (int i = 0; i < m; ++i) {
+    out_lesson[i] = sol.lesson[i];
+    out_class[i] = sol.cls[i];
+    out_teacher[i] = sol.teacher[i];
+    out_subject[i] = sol.subject[i];
+    out_room[i] = sol.room[i];
+    out_day[i] = sol.day[i];
+    out_slot[i] = sol.slot[i];
+  }
+  if (out_count) *out_count = m;
+  return 1;
+}
+
+}  // namespace
+
+// Основная точка входа: решение пишется в буферы вызывающей стороны,
+// C не выделяет памяти вовсе (нет ручного free и риска утечки);
+// на Windows exe (DLL-путь) это же устраняет конверсию uintptr →
+// unsafe.Pointer. Возвращает 1 при наличии решения, иначе 0.
+extern "C" ORTOOLS_EXPORT int ortools_solve_out(
+    int num_lessons, const int* lesson_hours, const int* lesson_class,
+    const int* lesson_teacher, const int* lesson_subject,
+    const int* lesson_req_type, int num_rooms, const int* room_ids,
+    const int* room_type, int days_per_week, int slots_per_day,
+    int num_constraints, const CConstraint* constraints, int time_limit_ms,
+    int workers, int* out_lesson, int* out_class, int* out_teacher,
+    int* out_subject, int* out_room, int* out_day, int* out_slot,
+    int capacity, int* out_count) {
+  Solution sol = solve_impl(num_lessons, lesson_hours, lesson_class,
+                            lesson_teacher, lesson_subject, lesson_req_type,
+                            num_rooms, room_ids, room_type, days_per_week,
+                            slots_per_day, num_constraints, constraints,
+                            time_limit_ms, workers);
+  return write_solution(sol, out_lesson, out_class, out_teacher, out_subject,
+                        out_room, out_day, out_slot, capacity, out_count);
+}
+
+// Совместимая точка входа (malloc-версия) — оставлена для старых
+// сборок; новые Go-обёртки используют ortools_solve_out.
+extern "C" ORTOOLS_EXPORT ScheduleResult* ortools_solve(
+    int num_lessons, const int* lesson_hours, const int* lesson_class,
+    const int* lesson_teacher, const int* lesson_subject,
+    const int* lesson_req_type, int num_rooms, const int* room_ids,
+    const int* room_type, int days_per_week, int slots_per_day,
+    int num_constraints, const CConstraint* constraints, int time_limit_ms,
+    int workers) {
+  Solution sol = solve_impl(num_lessons, lesson_hours, lesson_class,
+                            lesson_teacher, lesson_subject, lesson_req_type,
+                            num_rooms, room_ids, room_type, days_per_week,
+                            slots_per_day, num_constraints, constraints,
+                            time_limit_ms, workers);
+  if (!sol.ok) return nullptr;
+  const int n = static_cast<int>(sol.lesson.size());
+  ScheduleResult* res =
+      static_cast<ScheduleResult*>(malloc(sizeof(ScheduleResult)));
+  res->count = n;
+  res->lesson_ids = static_cast<int*>(malloc(sizeof(int) * (n > 0 ? n : 1)));
+  res->class_ids = static_cast<int*>(malloc(sizeof(int) * (n > 0 ? n : 1)));
+  res->teacher_ids = static_cast<int*>(malloc(sizeof(int) * (n > 0 ? n : 1)));
+  res->subject_ids = static_cast<int*>(malloc(sizeof(int) * (n > 0 ? n : 1)));
+  res->room_ids = static_cast<int*>(malloc(sizeof(int) * (n > 0 ? n : 1)));
+  res->days = static_cast<int*>(malloc(sizeof(int) * (n > 0 ? n : 1)));
+  res->slots = static_cast<int*>(malloc(sizeof(int) * (n > 0 ? n : 1)));
+  for (int i = 0; i < n; ++i) {
+    res->lesson_ids[i] = sol.lesson[i];
+    res->class_ids[i] = sol.cls[i];
+    res->teacher_ids[i] = sol.teacher[i];
+    res->subject_ids[i] = sol.subject[i];
+    res->room_ids[i] = sol.room[i];
+    res->days[i] = sol.day[i];
+    res->slots[i] = sol.slot[i];
   }
   return res;
 }

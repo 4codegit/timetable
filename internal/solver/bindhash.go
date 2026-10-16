@@ -4,4 +4,4 @@
 package solver
 
 // bindObjectHash — контрольная сумма bind.o, вшитая при сборке биндинга.
-const bindObjectHash = "89aebe562f3af0543923193e5968d70c"
+const bindObjectHash = "200e6bba52ad1cda7a00015e3ec288e8"
