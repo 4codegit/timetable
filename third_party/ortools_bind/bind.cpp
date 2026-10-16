@@ -1,5 +1,6 @@
 #include "bind.h"
 
+#include <chrono>
 #include <cstdlib>
 #include <limits>
 #include <map>
@@ -110,13 +111,37 @@ extern "C" ScheduleResult* ortools_solve(
       subParent[constraints[ci].entity_id] = constraints[ci].value;
     }
   }
-  auto sameParentSubs = [&](int cls1, int cls2) -> bool {
-    auto p1 = subParent.find(cls1), p2 = subParent.find(cls2);
-    return p1 != subParent.end() && p2 != subParent.end() && p1->second == p2->second;
-  };
 
+  // Семейные группы для уникальности кабинета: подгруппы одного родителя
+  // — ОДНА группа (половины класса делят кабинет законно); родитель и
+  // каждый посторонний класс — сами по себе. «В кабинете не более одной
+  // семьи» эквивалентно полному перебору пар уроков между разными
+  // семьями, но ЛИНЕЙНО по числу уроков: старый попарный цикл давал
+  // O(D·S·R·O²) констрейнтов (сотни миллионов на большой школе — сборка
+  // модели съедала весь тайм-лимит), семейные бакеты дают O(D·S·R·(O+F)).
+  int nextFam = 0;
+  std::map<int, int> famOfCls;          // cls → семейный id
+  std::map<int, int> kidsFamOfParent;   // parent → семейный id его подгрупп
+  for (int o = 0; o < O; ++o) {
+    int cls = occ[o].cls;
+    if (famOfCls.count(cls)) continue;
+    auto it = subParent.find(cls);
+    if (it != subParent.end()) {
+      int parent = it->second;
+      if (!kidsFamOfParent.count(parent))
+        kidsFamOfParent[parent] = nextFam++;
+      famOfCls[cls] = kidsFamOfParent[parent];
+    } else {
+      famOfCls[cls] = nextFam++;
+    }
+  }
+  // fam → вхождения уроков этой семьи
+  std::map<int, std::vector<int>> famOccs;
+  for (int o = 0; o < O; ++o)
+    famOccs[famOfCls[occ[o].cls]].push_back(o);
 
-    // hard uniqueness: teacher / class at most one per (day,slot); room at most one per (day,slot,room)
+  // hard uniqueness: teacher / class at most one per (day,slot); room at
+  // most one FAMILY per (day,slot,room) — половины одной семьи вмещаются.
   for (int d = 0; d < D; ++d) {
     for (int s = 0; s < S; ++s) {
       for (const auto& kv : teacherOccs)
@@ -124,17 +149,22 @@ extern "C" ScheduleResult* ortools_solve(
       for (const auto& kv : classOccs)
         if (!kv.second.empty()) cp.AddAtMostOne(cellVars(kv.second, d, s));
       for (int r = 0; r < R; ++r) {
-        // Один кабинет на слот, НО подгруппы одного родителя могут
-        // заниматься в нём параллельно (половины класса вмещаются).
-        for (int o1 = 0; o1 < O; ++o1)
-          for (int o2 = o1 + 1; o2 < O; ++o2) {
-            if (occ[o1].cls == occ[o2].cls) continue; // тот же класс — уже покрыт
-            if (sameParentSubs(occ[o1].cls, occ[o2].cls)) continue; // половинки — можно
-            std::vector<BoolVar> pair;
-            pair.push_back(x[o1][d][s][r]);
-            pair.push_back(x[o2][d][s][r]);
-            cp.AddAtMostOne(pair);
+        std::vector<BoolVar> famPresent;
+        for (const auto& fk : famOccs) {
+          BoolVar present;
+          bool fresh = true;
+          if (fk.second.size() == 1) {
+            present = x[fk.second[0]][d][s][r]; // единственный урок — он и есть семья
+          } else {
+            present = cp.NewBoolVar();
+            std::vector<LinearExpr> vars;
+            vars.reserve(fk.second.size());
+            for (int o : fk.second) vars.push_back(x[o][d][s][r]);
+            cp.AddMaxEquality(present, vars);
           }
+          famPresent.push_back(present);
+        }
+        if (famPresent.size() > 1) cp.AddAtMostOne(famPresent);
       }
     }
   }
@@ -348,12 +378,15 @@ extern "C" ScheduleResult* ortools_solve(
   // и SolvePrecise откатывается на эвристику, не знающую про
   // одновременность половинок делёного урока.
 
+  const auto t_build0 = std::chrono::steady_clock::now();
   CpModelProto model_proto = cp.Build();
+  const double build_sec =
+      std::chrono::duration<double>(std::chrono::steady_clock::now() - t_build0).count();
   const CpSolverResponse response = SolveWithParameters(model_proto, params);
   {
-    // Диагностика в stdout сервера: статус,_solution и время.
-    std::fprintf(stderr, "[ortools] status=%d wall_time=%.1fs\n",
-                 static_cast<int>(response.status()),
+    // Диагностика в stdout сервера: статус, время сборки модели и решения.
+    std::fprintf(stderr, "[ortools] status=%d build=%.1fs wall_time=%.1fs\n",
+                 static_cast<int>(response.status()), build_sec,
                  response.wall_time());
   }
   if (response.status() != CpSolverStatus::OPTIMAL &&

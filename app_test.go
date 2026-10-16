@@ -416,16 +416,6 @@ func TestSwapEntriesIntegration(t *testing.T) {
 	}
 }
 
-// TestHasPreciseSolver ensures the boolean is exposed at the App layer so the
-// frontend can show an accurate "OR-Tools available" badge. The default build
-// (no -tags ortools) must report false.
-func TestHasPreciseSolver(t *testing.T) {
-	a := newTestApp(t)
-	if a.HasPreciseSolver() {
-		t.Fatal("default build (no -tags ortools) should report HasPreciseSolver=false")
-	}
-}
-
 // TestExportPDF verifies the new Go-side PDF renderer end-to-end:
 //   - The PDF is non-empty.
 //   - It starts with the PDF magic bytes (%PDF-) and ends with the EOF

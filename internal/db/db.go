@@ -31,7 +31,13 @@ type Store struct {
 
 // New opens (or creates) the SQLite database and runs migrations.
 func New(path string) (*Store, error) {
-	d, err := sql.Open("sqlite", path+"?_pragma=foreign_keys(1)")
+	// Прагмы задаются в DSN, а не через Exec: пул открывает несколько
+	// соединений, и busy_timeout/foreign_keys должны действовать на
+	// КАЖДОЕ из них. WAL — читатели не блокируют писателя, коммиты не
+	// ждут полного fsync журнала; busy_timeout — вместо мгновенного
+	// SQLITE_BUSY при редкой конкуренции за запись.
+	dsn := path + "?_pragma=foreign_keys(1)&_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)"
+	d, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, err
 	}
